@@ -45,6 +45,13 @@ computer = [
 routing = [
     "routellm>=0.2.0",    # UC Berkeley classifier for strong/weak model routing
 ]
+integrations = [
+    "slack-bolt>=1.18.0",            # Slack bot (Socket Mode — no public URL)
+    "slack-sdk>=3.27.0",             # Slack Web API client (for posting replies)
+    "discord.py>=2.3.0",             # Discord bot
+    "python-telegram-bot>=21.0",     # Telegram bot (long polling — no public URL)
+    "botframework-connector>=4.15.0", # Microsoft Teams (Bot Framework)
+]
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",

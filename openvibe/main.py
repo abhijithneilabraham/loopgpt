@@ -35,7 +35,9 @@ app = typer.Typer(
     add_completion=False,
 )
 session_app = typer.Typer(name="session", help="Manage sessions.")
+gateway_app = typer.Typer(name="gateway", help="Enterprise messaging integrations.")
 app.add_typer(session_app)
+app.add_typer(gateway_app)
 
 console = Console()
 err_console = Console(stderr=True, style="red")
@@ -262,6 +264,126 @@ def session_show(session_id: str = typer.Argument(..., help="Session ID.")) -> N
                     f"[dim]Tool: {state.get('tool_name')} "
                     f"[{state.get('status')}][/dim]"
                 )
+
+
+# ---------------------------------------------------------------------------
+# gateway sub-commands
+# ---------------------------------------------------------------------------
+
+
+@gateway_app.callback(invoke_without_command=True)
+def gateway_root(ctx: typer.Context) -> None:
+    """Start all enabled messaging integrations (Slack, Discord, Telegram, …)."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(gateway_start)
+
+
+@gateway_app.command("start")
+def gateway_start(
+    project_dir: Optional[str] = typer.Option(
+        None, "--dir", "-d", help="Project directory."
+    ),
+    log_level: str = typer.Option("info", "--log-level", help="Logging level."),
+) -> None:
+    """Start all enabled integrations and keep running until Ctrl-C."""
+    import logging as _logging
+
+    _logging.basicConfig(
+        level=getattr(_logging, log_level.upper(), _logging.INFO),
+        format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    from openvibe.config import load_config
+    from openvibe.integrations.gateway import GatewayManager
+
+    resolved_dir = Path(project_dir).resolve() if project_dir else _get_project_dir()
+    config = load_config(resolved_dir)
+
+    _enabled = [
+        name
+        for name, cfg in [
+            ("slack", config.integrations.slack),
+            ("discord", config.integrations.discord),
+            ("telegram", config.integrations.telegram),
+            ("webhook", config.integrations.webhook),
+            ("teams", config.integrations.teams),
+        ]
+        if cfg.enabled
+    ]
+
+    if not _enabled:
+        err_console.print(
+            "[bold yellow]No integrations are enabled.[/bold yellow]\n"
+            "Add one or more to your [cyan]openvibe.json[/cyan]:\n\n"
+            '  "integrations": {\n'
+            '    "slack":    { "enabled": true, "bot_token": "${SLACK_BOT_TOKEN}", "app_token": "${SLACK_APP_TOKEN}" },\n'
+            '    "discord":  { "enabled": true, "token": "${DISCORD_BOT_TOKEN}" },\n'
+            '    "telegram": { "enabled": true, "token": "${TELEGRAM_BOT_TOKEN}" },\n'
+            '    "webhook":  { "enabled": true, "port": 8080, "secret": "${WEBHOOK_SECRET}" },\n'
+            '    "teams":    { "enabled": true, "app_id": "${TEAMS_APP_ID}", "app_password": "${TEAMS_APP_PASSWORD}" }\n'
+            "  }\n\n"
+            "Run [cyan]vibe gateway status[/cyan] to see configuration hints."
+        )
+        raise typer.Exit(1)
+
+    console.print(
+        f"[bold green]openvibe gateway[/bold green] starting "
+        f"[cyan]{', '.join(_enabled)}[/cyan]"
+    )
+
+    manager = GatewayManager.from_config(project_dir=resolved_dir, config=config)
+    manager.run()
+
+
+@gateway_app.command("status")
+def gateway_status(
+    project_dir: Optional[str] = typer.Option(
+        None, "--dir", "-d", help="Project directory."
+    ),
+) -> None:
+    """Show configuration status for all integrations."""
+    from openvibe.config import load_config
+    from openvibe.integrations.gateway import GatewayManager
+
+    resolved_dir = Path(project_dir).resolve() if project_dir else _get_project_dir()
+    config = load_config(resolved_dir)
+
+    # Build a dummy manager just for status (doesn't start openvibe)
+    from openvibe.integrations.gateway import GatewayManager as _GM
+
+    class _StatusManager(_GM):
+        def __init__(self) -> None:
+            self._cfg = config.integrations
+
+    manager = _StatusManager()
+    rows = manager.status()
+
+    table = Table(title="Gateway Integrations", show_header=True, header_style="bold")
+    table.add_column("Integration", style="cyan")
+    table.add_column("Enabled")
+    table.add_column("Notes")
+
+    for row in rows:
+        enabled_style = "green" if row["enabled"] == "yes" else "dim"
+        table.add_row(
+            row["name"],
+            f"[{enabled_style}]{row['enabled']}[/{enabled_style}]",
+            row["notes"],
+        )
+
+    console.print(table)
+    console.print()
+    console.print(
+        "Install integration packages:\n"
+        "  [cyan]pip install slack-bolt slack-sdk[/cyan]              # Slack\n"
+        "  [cyan]pip install discord.py[/cyan]                        # Discord\n"
+        "  [cyan]pip install python-telegram-bot[/cyan]               # Telegram\n"
+        "  [cyan]pip install botframework-connector[/cyan]            # Teams\n"
+        "  (webhook uses FastAPI which is already installed)\n\n"
+        "Or install all at once:\n"
+        "  [cyan]pip install openvibe[integrations][/cyan]"
+    )
 
 
 if __name__ == "__main__":

@@ -107,6 +107,109 @@ class RoutingConfig(BaseModel):
     use_routellm: bool = False
 
 
+# ---------------------------------------------------------------------------
+# Integration configs
+# ---------------------------------------------------------------------------
+
+
+class SlackIntegrationConfig(BaseModel):
+    """Slack bot via Socket Mode (no public URL required).
+
+    Setup:
+      1. Create a Slack app at https://api.slack.com/apps
+      2. Enable Socket Mode and copy the App-Level Token (xapp-...)
+      3. Add bot scopes: app_mentions:read, chat:write, im:history, im:read
+      4. Copy Bot Token (xoxb-...)
+      5. Install app to workspace
+    """
+
+    enabled: bool = False
+    bot_token: str = ""    # xoxb-...
+    app_token: str = ""    # xapp-... (socket mode)
+    default_agent: str = "build"
+    # When True, tool permission requests are auto-approved (recommended for bots)
+    auto_approve: bool = True
+
+
+class DiscordIntegrationConfig(BaseModel):
+    """Discord bot.
+
+    Setup:
+      1. Create a bot at https://discord.com/developers/applications
+      2. Enable Message Content Intent under Bot settings
+      3. Copy the Bot Token
+      4. Invite bot with scopes: bot + applications.commands
+      5. Required permissions: Send Messages, Read Message History
+    """
+
+    enabled: bool = False
+    token: str = ""        # Bot token from Discord Developer Portal
+    default_agent: str = "build"
+    auto_approve: bool = True
+
+
+class TelegramIntegrationConfig(BaseModel):
+    """Telegram bot via long polling (no public URL required).
+
+    Setup:
+      1. Message @BotFather on Telegram to create a new bot
+      2. Copy the token it gives you
+    """
+
+    enabled: bool = False
+    token: str = ""        # Token from @BotFather
+    default_agent: str = "build"
+    auto_approve: bool = True
+    # Optional: restrict to specific chat IDs (empty = allow all)
+    allowed_chat_ids: list[int] = Field(default_factory=list)
+
+
+class WebhookIntegrationConfig(BaseModel):
+    """Generic inbound HTTP webhook — accepts POST requests with a text body.
+
+    Any tool that can send an HTTP POST (Zapier, Make, n8n, GitHub Actions,
+    curl, etc.) can trigger openvibe this way.
+
+    Endpoint: POST /webhook
+    Body (JSON): {"text": "...", "agent": "build", "session_id": "optional"}
+    Auth: pass secret in X-Webhook-Secret header or ?secret= query param.
+    """
+
+    enabled: bool = False
+    host: str = "0.0.0.0"
+    port: int = 8080
+    secret: str = ""       # Required if set; checked via X-Webhook-Secret header
+    default_agent: str = "build"
+    auto_approve: bool = True
+
+
+class TeamsIntegrationConfig(BaseModel):
+    """Microsoft Teams bot via Azure Bot Framework webhook.
+
+    Setup:
+      1. Register a bot at https://dev.botframework.com/
+      2. Copy App ID and App Password
+      3. Set the messaging endpoint to your webhook URL + /teams
+      4. Add the bot to your Teams workspace
+    """
+
+    enabled: bool = False
+    app_id: str = ""
+    app_password: str = ""
+    default_agent: str = "build"
+    auto_approve: bool = True
+
+
+class IntegrationsConfig(BaseModel):
+    """All enterprise messaging / webhook integrations."""
+
+    slack: SlackIntegrationConfig = Field(default_factory=SlackIntegrationConfig)
+    discord: DiscordIntegrationConfig = Field(default_factory=DiscordIntegrationConfig)
+    telegram: TelegramIntegrationConfig = Field(default_factory=TelegramIntegrationConfig)
+    webhook: WebhookIntegrationConfig = Field(default_factory=WebhookIntegrationConfig)
+    teams: TeamsIntegrationConfig = Field(default_factory=TeamsIntegrationConfig)
+
+
 class AgentConfig(BaseModel):
     """Definition for a named agent (built-in or user-defined)."""
 
@@ -178,6 +281,8 @@ class Config(BaseModel):
     model_tiers: ModelTiersConfig = Field(default_factory=ModelTiersConfig)
     # Controls routing behaviour
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
+    # Enterprise messaging / webhook integrations
+    integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     # Keybinds and other UI settings are intentionally omitted from the core
 
 
