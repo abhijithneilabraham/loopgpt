@@ -100,6 +100,10 @@ class StepStartPart(BaseModel):
     """Marker inserted at the beginning of each agent iteration."""
 
     type: Literal["step_start"] = "step_start"
+    # Set when a cheaper/different model was selected for this step.
+    model: str | None = None   # e.g. "claude-haiku-4-5"
+    tier: str | None = None    # e.g. "fast" | "balanced" | "complex"
+    model_switched: bool = False  # True when model differs from previous step
 
 
 class CompactionPart(BaseModel):
@@ -232,6 +236,21 @@ class ToolStateChangedEvent(Event):
 class TurnCompletedEvent(Event):
     message_id: str = ""
     stop_reason: str = "end_turn"
+
+
+@dataclass
+class ModelSwitchedEvent(Event):
+    """Published when the router selects a different model than the previous step.
+
+    The TUI and API consumers can use this to notify the user that a
+    cheaper (or different) model is handling the current step.
+    """
+
+    model_id: str = ""      # e.g. "claude-haiku-4-5"
+    tier: str = ""          # e.g. "fast" | "balanced" | "complex"
+    reason: str = ""        # human-readable explanation
+
+
 
 
 # ---------------------------------------------------------------------------

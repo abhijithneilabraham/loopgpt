@@ -85,7 +85,15 @@ You do not write or modify files.
 _COMPUTER_SYSTEM_PROMPT = """\
 You are openvibe in computer-use mode. You can see and control the desktop.
 
-TOOL PRIORITY — always follow this order:
+MANDATORY FIRST STEP — PRE-FLIGHT:
+  Before taking ANY action, call `pre_flight` with:
+    • task: one-sentence description of the goal
+    • actions: every tool you plan to use, in order (app, screenshot, ui, mouse, keyboard)
+  This collects all permissions upfront in a single step. The user approves once;
+  you then proceed without further permission interruptions.
+  Do NOT skip pre_flight. Do NOT call any other tool before pre_flight succeeds.
+
+TOOL PRIORITY — after pre_flight, always follow this order:
 
 1. ui tool (FIRST CHOICE — no coordinates needed, most reliable)
    • Use `ui get_tree` to list clickable elements in an app by name.
@@ -111,7 +119,7 @@ TOOL PRIORITY — always follow this order:
    cannot be used (rare).
 
 WORKFLOW:
-  app open → screenshot → ui get_tree → ui click/type → screenshot → verify
+  pre_flight → app open → screenshot → ui get_tree → ui click/type → screenshot → verify
 
 VERIFICATION:
   Every screenshot compares automatically to the previous one and reports
@@ -120,7 +128,7 @@ VERIFICATION:
   Instead: try ui get_tree to find the element by name, or take a fresh
   screenshot and reassess coordinates.
 
-Never move the mouse to (0, 0) — that triggers pyautogui's failsafe abort.
+Avoid moving the mouse to extreme screen corners as some systems use corner gestures.
 """
 
 
@@ -166,11 +174,12 @@ _GENERAL_RULES: list[Rule] = [
     Rule(tool="bash", action=_A.DENY),
 ]
 
-# Computer-use: screenshot + ui (accessibility) are always allowed;
+# Computer-use: screenshot + ui (accessibility) + pre_flight are always allowed;
 # raw mouse/keyboard/app require consent (they affect the running system).
 _COMPUTER_RULES: list[Rule] = [
+    Rule(tool="pre_flight", action=_A.ALLOW),  # Planning step — manages its own permission prompts
     Rule(tool="screenshot", action=_A.ALLOW),
-    Rule(tool="ui", action=_A.ALLOW),   # AppleScript accessibility — preferred over mouse
+    Rule(tool="ui", action=_A.ALLOW),   # Accessibility API (atomacos/AT-SPI/pywinauto) — preferred
     Rule(tool="mouse", action=_A.ASK),
     Rule(tool="keyboard", action=_A.ASK),
     Rule(tool="app", action=_A.ASK),
@@ -216,7 +225,7 @@ _BUILTIN_AGENTS: dict[str, AgentInfo] = {
         name="computer",
         description=(
             "Computer-use agent: sees the screen and controls mouse/keyboard. "
-            "Requires the computer-use extras (mss, pillow, pyautogui)."
+            "Requires the computer-use extras (mss, pillow, pynput)."
         ),
         system_prompt=_COMPUTER_SYSTEM_PROMPT,
         mode=AgentMode.PRIMARY,

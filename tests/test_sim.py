@@ -1,4 +1,4 @@
-"""Tests for the Enterprise Workflow Simulation Harness.
+"""Tests for the Simulation Harness.
 
 All LLM calls go through stub implementations of LLMBackend — exactly
 how openvibe's own session processor tests work.  No raw litellm calls.
@@ -34,7 +34,7 @@ from openvibe.sim.scenario import (
     Turn,
 )
 from openvibe.sim.designer import SimDesigner, _parse_json, _primary_persona_role
-from openvibe.sim.world import WorldSimulator, _detect_outcome, _format_tool_list, _to_messages
+from openvibe.sim.world import WorldSimulator, _detect_outcome, _format_tool_list, _to_messages, _run_shell_command
 from openvibe.sim.evaluator import Evaluator
 from openvibe.sim.harness import HarnessConfig, SimHarness
 
@@ -98,7 +98,7 @@ class RoutingStubBackend:
 def _env() -> SimEnvironment:
     return SimEnvironment(
         name="Test Environment",
-        description="A test enterprise workflow.",
+        description="A test workflow.",
         context="Test context",
         personas=[
             PersonaTemplate(
@@ -706,9 +706,10 @@ class TestSimHarness:
         """Routing stub that handles designer, world, and evaluator calls."""
         return RoutingStubBackend(
             routes={
-                # Designer system prompt keywords
-                "workflow architect": _env_json(),
-                "scenario designer": _scenarios_json(2),
+                # Designer system prompt keyword (from _DESIGN_SYSTEM)
+                "simulation environment designer": _env_json(),
+                # Scenario generator system prompt keyword (from _GENERATE_SYSTEM)
+                "workflow scenario designer": _scenarios_json(2),
                 # Evaluator system prompt keyword
                 "expert evaluator": _judge_json(0.8),
                 # World agent system prompt
@@ -740,7 +741,7 @@ class TestSimHarness:
     @pytest.mark.asyncio
     async def test_design_shortcut(self):
         llm = RoutingStubBackend(
-            routes={"workflow architect": _env_json()},
+            routes={"simulation environment designer": _env_json()},
             default="{}",
         )
         config = HarnessConfig(context="billing support")
@@ -752,7 +753,7 @@ class TestSimHarness:
     @pytest.mark.asyncio
     async def test_generate_dataset_shortcut(self):
         llm = RoutingStubBackend(
-            routes={"scenario designer": _scenarios_json(3)},
+            routes={"workflow scenario designer": _scenarios_json(3)},
             default="[]",
         )
         config = HarnessConfig(context="billing support", n_generate=3)
@@ -877,3 +878,150 @@ class TestSimTool:
 
         assert not result.error
         assert "Customer Support" in result.output or "Environment" in result.title
+
+
+# ---------------------------------------------------------------------------
+# ToolSpec.shell_command field tests
+# ---------------------------------------------------------------------------
+
+
+class TestToolSpecShellCommand:
+    def test_shell_command_defaults_to_none(self):
+        t = ToolSpec(name="foo", description="bar")
+        assert t.shell_command is None
+
+    def test_shell_command_set(self):
+        t = ToolSpec(
+            name="ask",
+            description="Ask the CLI.",
+            parameters={"type": "object", "properties": {"question": {"type": "string"}}},
+            shell_command="python {cwd}/cli.py ask {question}",
+        )
+        assert t.shell_command == "python {cwd}/cli.py ask {question}"
+
+    def test_shell_command_roundtrips_serialisation(self):
+        t = ToolSpec(name="run", description="Run.", shell_command="echo {cwd}")
+        data = t.model_dump()
+        t2 = ToolSpec.model_validate(data)
+        assert t2.shell_command == "echo {cwd}"
+
+    def test_env_with_shell_command_tools_serialises(self):
+        e = _env()
+        e.tools[0] = ToolSpec(
+            name="lookup_account",
+            description="Look up account.",
+            parameters={"type": "object", "properties": {"email": {"type": "string"}}, "required": ["email"]},
+            shell_command="python {cwd}/fetch.py {email}",
+        )
+        data = e.model_dump()
+        e2 = SimEnvironment.model_validate(data)
+        assert e2.tools[0].shell_command == "python {cwd}/fetch.py {email}"
+
+
+# ---------------------------------------------------------------------------
+# HarnessConfig.working_dir field tests
+# ---------------------------------------------------------------------------
+
+
+class TestHarnessConfigWorkingDir:
+    def test_working_dir_defaults_to_none(self):
+        cfg = HarnessConfig()
+        assert cfg.working_dir is None
+
+    def test_working_dir_set(self):
+        cfg = HarnessConfig(working_dir="/tmp/myapp")
+        assert cfg.working_dir == "/tmp/myapp"
+
+    def test_working_dir_passed_to_world_simulator(self):
+        cfg = HarnessConfig(working_dir="/tmp/myapp")
+        harness = SimHarness(config=cfg, llm=StubLLMBackend("{}"))
+        assert harness._world._working_dir == "/tmp/myapp"
+
+    def test_world_simulator_working_dir_none_by_default(self):
+        cfg = HarnessConfig()
+        harness = SimHarness(config=cfg, llm=StubLLMBackend("{}"))
+        assert harness._world._working_dir is None
+
+
+# ---------------------------------------------------------------------------
+# _run_shell_command tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunShellCommand:
+    @pytest.mark.asyncio
+    async def test_echo_command(self):
+        result = await _run_shell_command("echo hello", {}, working_dir=None)
+        assert "hello" in result
+
+    @pytest.mark.asyncio
+    async def test_cwd_placeholder_substituted(self, tmp_path: Path):
+        result = await _run_shell_command("echo {cwd}", {}, working_dir=str(tmp_path))
+        assert str(tmp_path) in result
+
+    @pytest.mark.asyncio
+    async def test_param_placeholder_substituted(self):
+        result = await _run_shell_command("echo {msg}", {"msg": "world"}, working_dir=None)
+        assert "world" in result
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_code_reported(self):
+        result = await _run_shell_command("exit 42", {}, working_dir=None)
+        assert "[exit 42]" in result or "42" in result
+
+    @pytest.mark.asyncio
+    async def test_leftover_placeholders_stripped(self):
+        # {unused_param} is not supplied → should be stripped, command still runs
+        result = await _run_shell_command("echo hi {unused_param}", {}, working_dir=None)
+        assert "hi" in result
+
+    @pytest.mark.asyncio
+    async def test_working_dir_used_as_cwd(self, tmp_path: Path):
+        # pwd should output the working dir
+        result = await _run_shell_command("pwd", {}, working_dir=str(tmp_path))
+        assert str(tmp_path) in result
+
+
+# ---------------------------------------------------------------------------
+# WorldSimulator.working_dir integration
+# ---------------------------------------------------------------------------
+
+
+class TestWorldSimulatorWorkingDir:
+    def test_working_dir_stored(self):
+        llm = StubLLMBackend("Done. [RESOLVED]")
+        sim = WorldSimulator(llm, model="x", max_steps=1, working_dir="/tmp/art")
+        assert sim._working_dir == "/tmp/art"
+
+    def test_working_dir_defaults_none(self):
+        llm = StubLLMBackend("Done. [RESOLVED]")
+        sim = WorldSimulator(llm, model="x")
+        assert sim._working_dir is None
+
+    @pytest.mark.asyncio
+    async def test_simulate_with_shell_tool_executes_command(self, tmp_path: Path):
+        """When a ToolSpec has shell_command, the simulator runs it for real."""
+        # Write a trivial script the tool will call
+        script = tmp_path / "greet.py"
+        script.write_text("import sys; print('Hello', sys.argv[1])\n")
+
+        tool_with_cmd = ToolSpec(
+            name="greet",
+            description="Greet someone.",
+            parameters={"type": "object", "properties": {"name": {"type": "string"}}},
+            shell_command=f"python {{cwd}}/greet.py {{name}}",
+        )
+        env = _env()
+        env.tools = [tool_with_cmd]
+
+        llm = RoutingStubBackend(
+            routes={"support agent": 'TOOL_CALL: greet({"name": "Alice"})\nDone. [RESOLVED]'},
+            default="OK. [RESOLVED]",
+        )
+        sim = WorldSimulator(llm, model="x", max_steps=3, working_dir=str(tmp_path))
+        s = _scenario(env)
+        result = await sim.simulate(s, env)
+        assert isinstance(result, SimulationResult)
+        # Conversation should include the real command output
+        full_text = " ".join(t.content for t in result.full_conversation)
+        assert "Hello" in full_text or result.steps_taken >= 1

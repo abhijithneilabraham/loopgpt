@@ -7,6 +7,7 @@ Example::
 
     png_bytes, w, h = capture_screen()
     png_bytes, w, h = capture_screen(region=(100, 100, 800, 600))
+    png_bytes, w, h = capture_screen(monitor=2)   # second monitor
 """
 
 from __future__ import annotations
@@ -20,8 +21,29 @@ import io
 _MAX_WIDTH = 1920
 
 
+def list_monitors() -> list[dict[str, int]]:
+    """Return info for all monitors as a list of dicts with keys left/top/width/height.
+
+    The first entry (index 0) is the primary monitor; additional entries are
+    secondary monitors in the order reported by the OS.
+    """
+    try:
+        import mss
+    except ImportError as exc:
+        raise ImportError("mss is required: pip install mss pillow") from exc
+
+    with mss.mss() as sct:
+        # monitors[0] = virtual bounding box of all screens
+        # monitors[1..n] = individual screens
+        return [
+            {"left": m["left"], "top": m["top"], "width": m["width"], "height": m["height"]}
+            for m in sct.monitors[1:]
+        ]
+
+
 def capture_screen(
     region: tuple[int, int, int, int] | None = None,
+    monitor: int = 1,
 ) -> tuple[bytes, int, int]:
     """Capture a screenshot and return ``(png_bytes, width, height)``.
 
@@ -29,7 +51,10 @@ def capture_screen(
     ----------
     region:
         Optional ``(x, y, width, height)`` in *logical* screen coordinates.
-        ``None`` captures the entire primary monitor.
+        ``None`` captures the entire *monitor*.
+    monitor:
+        1-indexed monitor number (1 = primary, 2 = second monitor, …).
+        Ignored when *region* is provided.
 
     Raises
     ------
@@ -58,13 +83,13 @@ def capture_screen(
     with mss.mss() as sct:
         if region is not None:
             x, y, w, h = region
-            monitor: dict[str, int] = {"left": x, "top": y, "width": w, "height": h}
+            mon_dict: dict[str, int] = {"left": x, "top": y, "width": w, "height": h}
         else:
-            # monitors[1] is the primary display.
-            # monitors[0] is the virtual all-monitors union.
-            monitor = dict(sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0])
+            # monitors[0] = virtual bounding box, monitors[1..n] = physical monitors
+            mon_idx = max(1, min(monitor, len(sct.monitors) - 1))
+            mon_dict = dict(sct.monitors[mon_idx] if len(sct.monitors) > mon_idx else sct.monitors[0])
 
-        sct_img = sct.grab(monitor)
+        sct_img = sct.grab(mon_dict)
 
         # ── Critical fix ────────────────────────────────────────────────────
         # sct_img.bgra is a memoryview (or custom buffer object) returned by

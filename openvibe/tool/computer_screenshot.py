@@ -30,16 +30,22 @@ class ScreenshotTool(Tool):
         region: list[int] | None = Field(
             default=None,
             description=(
-                "Optional screen region to capture as [x, y, width, height] in pixels. "
-                "Omit (or pass null) to capture the entire primary screen."
+                "Optional screen region as [x, y, width, height] in pixels. "
+                "Omit to capture the full monitor."
+            ),
+        )
+        monitor: int = Field(
+            default=1,
+            description=(
+                "1-indexed monitor to capture (1 = primary, 2 = second display, …). "
+                "Ignored when region is provided."
             ),
         )
         save_path: str | None = Field(
             default=None,
             description=(
-                "Optional absolute path where the PNG should be saved on disk. "
-                "Parent directories are created automatically. "
-                "Example: '/Users/alice/Documents/screenshot.png'"
+                "Optional absolute path to save the PNG to disk. "
+                "Parent directories are created automatically."
             ),
         )
 
@@ -74,7 +80,7 @@ class ScreenshotTool(Tool):
         try:
             loop = asyncio.get_event_loop()
             png_bytes, width, height = await loop.run_in_executor(
-                None, capture_screen, region
+                None, lambda: capture_screen(region=region, monitor=params.monitor)
             )
         except ImportError as exc:
             return ToolResult(
@@ -144,8 +150,8 @@ class ScreenshotTool(Tool):
         # Include logical screen size so the mouse tool can scale correctly.
         logical_note = ""
         try:
-            import pyautogui  # type: ignore[import-not-found]
-            lw, lh = pyautogui.size()
+            from openvibe.computer.input import screen_size
+            lw, lh = screen_size()
             logical_note = f" (logical screen: {lw}×{lh})"
         except Exception:
             pass

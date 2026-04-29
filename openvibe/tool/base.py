@@ -226,6 +226,7 @@ def create_default_registry() -> ToolRegistry:
     from openvibe.tool.computer_app import AppTool
     from openvibe.tool.computer_keyboard import KeyboardTool
     from openvibe.tool.computer_mouse import MouseTool
+    from openvibe.tool.computer_preflight import PreFlightTool
     from openvibe.tool.computer_screenshot import ScreenshotTool
     from openvibe.tool.computer_ui import UITool
     from openvibe.tool.sim_tool import SimTool
@@ -243,6 +244,7 @@ def create_default_registry() -> ToolRegistry:
         WebFetchTool(),
         TodoWriteTool(),
         TodoReadTool(),
+        PreFlightTool(),
         ScreenshotTool(),
         UITool(),
         MouseTool(),

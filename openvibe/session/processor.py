@@ -38,8 +38,9 @@ from openvibe.llm import (LLMBackend, Message, ReasoningDelta, StreamDone,
 from openvibe.session import session as session_store
 from openvibe.session.models import (APIError, AssistantError, AuthError,
                                      ContextOverflowError, MessageInfo,
-                                     PartUpdatedEvent, ReasoningDeltaEvent,
-                                     ReasoningPart, SessionInfo, StepStartPart,
+                                     ModelSwitchedEvent, PartUpdatedEvent,
+                                     ReasoningDeltaEvent, ReasoningPart,
+                                     SessionInfo, StepStartPart,
                                      TextDeltaEvent, TextPart, ToolPart,
                                      ToolState, ToolStateChangedEvent,
                                      TurnCompletedEvent, now_iso)
@@ -50,6 +51,7 @@ if TYPE_CHECKING:
     from openvibe.bus import EventBus
     from openvibe.db import Database
     from openvibe.permission.permission import PermissionService, Rule
+    from openvibe.routing.router import ModelRouter, RoutingPlan
 
 DOOM_LOOP_THRESHOLD = 3
 
@@ -86,12 +88,16 @@ class SessionProcessor:
         bus: "EventBus",
         registry: ToolRegistry,
         permissions: "PermissionService",
+        router: "ModelRouter | None" = None,
     ) -> None:
         self._db = db
         self._llm = llm
         self._bus = bus
         self._registry = registry
         self._permissions = permissions
+        self._router = router
+        # Sessions already asked about local-model routing this run.
+        self._routing_asked: set[str] = set()
 
     async def run(
         self,
@@ -129,7 +135,27 @@ class SessionProcessor:
         # 4. Permission rules for this agent
         rules: list["Rule"] = list(agent.permission_rules)
 
-        # 5. Main loop
+        # 5. On the first turn of a new session, check whether local models
+        #    are available and ask once for routing permission if needed.
+        if len(history) <= 1 and session.id not in self._routing_asked:
+            await self._maybe_ask_routing_permission(session)
+
+        # 6. Classify task complexity once for this entire turn.
+        #    All tool-call iterations reuse the same model — no re-classification.
+        routing_plan = None
+        if self._router is not None:
+            routing_plan = self._router.select(user_text, history_len=len(history))
+            if routing_plan.switched:
+                await self._bus.publish(
+                    ModelSwitchedEvent(
+                        session_id=session.id,
+                        model_id=routing_plan.model_id,
+                        tier=str(routing_plan.tier),
+                        reason=routing_plan.reason,
+                    )
+                )
+
+        # 7. Main loop
         doom_counts: dict[str, int] = {}  # key: "tool:args_json" → count
         assistant_msg: MessageInfo | None = None
 
@@ -145,6 +171,7 @@ class SessionProcessor:
                 rules=rules,
                 doom_counts=doom_counts,
                 abort=abort,
+                routing_plan=routing_plan,
             )
 
             # Check if we should continue
@@ -175,15 +202,26 @@ class SessionProcessor:
         rules: list["Rule"],
         doom_counts: dict[str, int],
         abort: asyncio.Event,
+        routing_plan: "RoutingPlan | None" = None,
     ) -> MessageInfo:
+        # Use the pre-resolved model from the turn-level routing plan.
+        # The plan is determined once per user prompt, not per tool-call iteration.
+        model_string = routing_plan.model_str if routing_plan else _model_string(agent)
+
+        step_part = StepStartPart(
+            model=routing_plan.model_id if routing_plan else None,
+            tier=str(routing_plan.tier) if routing_plan else None,
+            model_switched=routing_plan.switched if routing_plan else False,
+        )
+
         # Create the assistant message shell up-front so we have an ID, but
         # don't announce it to the bus yet — wait until first real content so
         # a failed LLM call doesn't leave an empty "assistant" widget in the UI.
         assistant_msg = session_store.add_message(
             self._db, session.id, MessageRole.ASSISTANT
         )
-        assistant_msg.parts = [StepStartPart()]
-        session_store.upsert_part(self._db, assistant_msg.id, 0, StepStartPart())
+        assistant_msg.parts = [step_part]
+        session_store.upsert_part(self._db, assistant_msg.id, 0, step_part)
         from openvibe.session.models import MessageCreatedEvent
 
         announced = False
@@ -207,7 +245,7 @@ class SessionProcessor:
 
         try:
             async for event in self._llm.stream(
-                model=_model_string(agent),
+                model=model_string,
                 messages=ll_messages,
                 tools=tool_defs or None,
                 system=system_prompt,
@@ -609,6 +647,57 @@ class SessionProcessor:
             return ToolResult(title=f"Error in {name}", output=str(exc), error=True)
         finally:
             watcher.cancel()
+
+    async def _maybe_ask_routing_permission(self, session: SessionInfo) -> None:
+        """Ask the user once, at the start of a session, whether to use local
+        models for cheaper routing.
+
+        Only fires when:
+        - no model tiers are configured in the project/user config, AND
+        - ollama is available locally with matching models.
+
+        Uses the standard permission mechanism so the TUI shows the same
+        Allow / Deny prompt the user already knows.
+        """
+        from openvibe.config import PermissionAction
+        from openvibe.permission.permission import (PermissionDenied,
+                                                    PermissionRejected, Rule)
+        from openvibe.routing.discovery import run_discovery
+
+        self._routing_asked.add(session.id)
+
+        if self._router is None or self._router.enabled:
+            return  # tiers already configured — nothing to ask
+
+        try:
+            suggestions = run_discovery()
+        except Exception:
+            return
+
+        if not suggestions:
+            return  # ollama not available or no matching models
+
+        model_names = ", ".join(r.model_id for r in suggestions.values())
+        tier_desc = " · ".join(
+            f"{tier}: {ref.model_id}" for tier, ref in suggestions.items()
+        )
+
+        try:
+            await self._permissions.check(
+                tool="local_models",
+                argument=model_names,
+                description=(
+                    f"Use local Ollama models for cheaper tasks this session "
+                    f"({tier_desc}). Simple prompts → fast model, "
+                    f"complex prompts → your primary model."
+                ),
+                session_id=session.id,
+                rules=[Rule(tool="local_models", action=PermissionAction.ASK)],
+            )
+            # User approved — apply for this session only (not persisted).
+            self._router.apply_local_tiers(suggestions)
+        except (PermissionDenied, PermissionRejected):
+            pass  # user declined — use primary model only, no retry
 
 
 # ---------------------------------------------------------------------------

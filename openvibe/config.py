@@ -79,6 +79,34 @@ class ProviderConfig(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
+class ModelTiersConfig(BaseModel):
+    """Cheaper model tiers for cost-aware routing.
+
+    Example openvibe.json::
+
+        "model_tiers": {
+          "fast":     {"provider_id": "anthropic", "model_id": "claude-haiku-4-5"},
+          "balanced": {"provider_id": "anthropic", "model_id": "claude-sonnet-4-6"}
+        }
+
+    fast     — used for simple queries (reads, summaries, factual Q&A).
+    balanced — used for moderate tasks (single-file edits, short code gen).
+    The primary ``model`` is used for complex tasks regardless of tiers.
+    """
+
+    fast: ModelRef | None = None
+    balanced: ModelRef | None = None
+
+
+class RoutingConfig(BaseModel):
+    """Controls the complexity-aware model routing behaviour."""
+
+    enabled: bool = True
+    # Set to True to use RouteLLM's MF classifier instead of the built-in
+    # heuristic.  Requires: pip install routellm
+    use_routellm: bool = False
+
+
 class AgentConfig(BaseModel):
     """Definition for a named agent (built-in or user-defined)."""
 
@@ -146,6 +174,10 @@ class Config(BaseModel):
     instructions: list[str] = Field(default_factory=list)
     # Name of the agent to use by default (overrides "build")
     default_agent: str = "build"
+    # Cheaper model tiers for cost-aware routing
+    model_tiers: ModelTiersConfig = Field(default_factory=ModelTiersConfig)
+    # Controls routing behaviour
+    routing: RoutingConfig = Field(default_factory=RoutingConfig)
     # Keybinds and other UI settings are intentionally omitted from the core
 
 

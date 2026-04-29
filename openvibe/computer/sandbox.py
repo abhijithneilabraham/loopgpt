@@ -104,6 +104,8 @@ class ComputerSandbox:
     audit_log: list[AuditEntry] = field(default_factory=list)
     # Last captured screenshot PNG bytes — used for automatic change detection.
     last_screenshot: bytes | None = field(default=None, repr=False)
+    # Tools pre-approved by pre_flight — skips per-call permission prompts.
+    pre_approved_tools: set[str] = field(default_factory=set)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     # ------------------------------------------------------------------
@@ -116,6 +118,14 @@ class ComputerSandbox:
             return True  # no restrictions
         name_lower = app_name.lower()
         return any(allowed.lower() in name_lower for allowed in self.allowed_apps)
+
+    def pre_approve(self, tool: str) -> None:
+        """Mark *tool* as pre-approved so it skips the per-call permission prompt."""
+        self.pre_approved_tools.add(tool)
+
+    def is_pre_approved(self, tool: str) -> bool:
+        """Return True if *tool* was approved by pre_flight for this session."""
+        return tool in self.pre_approved_tools
 
     def is_coordinate_allowed(self, x: int, y: int) -> bool:
         """Return True when *(x, y)* is within the permitted screen region."""

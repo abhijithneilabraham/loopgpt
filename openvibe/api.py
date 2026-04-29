@@ -688,6 +688,7 @@ class OpenVibe:
         self._bus: Any = None
         self._permissions: Any = None
         self._processor: Any = None
+        self._router: Any = None  # openvibe.routing.router.ModelRouter
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -770,11 +771,30 @@ class OpenVibe:
         self._mcp = mcp
 
         self._project = _project_module.get_or_create(self._db, self._project_dir)
+
+        # Build model router and run local-model discovery if no tiers configured.
+        from openvibe.routing.router import ModelRouter
+        router = ModelRouter(config=self._config)
+        self._router = router
+        await self._discover_local_models(router)
+
         self._processor = SessionProcessor(
-            self._db, llm, self._bus, self._registry, self._permissions
+            self._db, llm, self._bus, self._registry, self._permissions,
+            router=router,
         )
         self._llm = llm
         return self
+
+    async def _discover_local_models(self, router: Any) -> None:
+        """No-op placeholder — local models are only used when explicitly configured.
+
+        To use local models, add model_tiers to openvibe.json:
+
+            "model_tiers": {
+              "fast":     {"provider_id": "ollama", "model_id": "qwen2.5:3b"},
+              "balanced": {"provider_id": "ollama", "model_id": "llama3.1:8b"}
+            }
+        """
 
     async def close_async(self) -> None:
         """Async cleanup — closes MCP connections then the database."""
@@ -792,6 +812,11 @@ class OpenVibe:
     @property
     def project_dir(self) -> Path:
         return self._project_dir
+
+    @property
+    def router(self) -> Any:  # ModelRouter | None
+        """The active model router, or None if not yet started."""
+        return self._router
 
     # ------------------------------------------------------------------
     # Session management
