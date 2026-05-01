@@ -6,9 +6,10 @@ and what permission rules apply.
 
 Built-in agents
 ---------------
-- **build**   — full-access primary agent for coding tasks (default)
-- **plan**    — read-only agent for analysis and planning
-- **general** — read-only subagent for research and multi-step searches
+- **build**    — full-access coding agent for writing, editing, and running code (default)
+- **plan**     — read-only agent for analysis and planning
+- **general**  — read-only subagent for research and multi-step searches
+- **computer** — desktop automation agent (screen + mouse/keyboard)
 
 Custom agents can be defined in ``openvibe.json`` under the ``agent`` key
 and will override built-in defaults with the same name.
@@ -52,34 +53,41 @@ class AgentInfo:
 # Default system prompts
 # ---------------------------------------------------------------------------
 
+_STEP_CONTEXT_INSTRUCTION = """\
+Before each tool call, write one concise sentence explaining what you are about \
+to do and why it is relevant to the overall goal. This helps the user track \
+progress through the process.\
+"""
+
 _BUILD_SYSTEM_PROMPT = """\
-You are openvibe, an expert AI coding assistant embedded in the developer's
-terminal. You have access to the file system, a bash shell, and a suite of
-tools for reading, writing, and searching code.
+You are openvibe, an AI coding agent. You help users write, edit, debug, and \
+understand code — and can execute multi-step workflows involving files, shell \
+commands, web resources, and desktop automation from start to finish.
 
 Guidelines:
-- Be concise. Prefer code over prose.
-- Think step-by-step for complex tasks. Use the todo tool to track progress.
-- Read files before editing them. Understand the existing patterns first.
+- Before each tool call, briefly state what you are doing and why (one sentence).
+- Think step-by-step. Use the todo tool to track progress on long tasks.
+- Read files before editing them; understand existing patterns first.
 - Prefer targeted edits (edit tool) over full rewrites (write tool).
-- Run tests after making changes to verify correctness.
+- Verify results after key steps.
 - Never guess at file paths — use glob or grep to locate files first.
 - When in doubt, ask a clarifying question rather than guessing.
 """
 
 _PLAN_SYSTEM_PROMPT = """\
-You are openvibe in plan mode — a read-only analysis agent. You can explore
-the codebase, read files, search for patterns, and answer questions, but you
-MUST NOT modify any files or run shell commands that have side effects.
+You are openvibe in plan mode — a read-only coding agent. You can explore \
+files, search for patterns, and answer questions, but you MUST NOT modify \
+files or run shell commands with side effects.
 
-Provide clear, structured analysis. Use headings, bullet points, and code
-blocks where appropriate.
+Before each tool call, briefly note what you are looking for and why. \
+Provide clear, structured analysis with headings and bullet points.
 """
 
 _GENERAL_SYSTEM_PROMPT = """\
-You are a general-purpose research subagent. Your role is to gather
-information, search code, fetch web resources, and return findings.
-You do not write or modify files.
+You are a general-purpose research subagent. Gather information, search code, \
+fetch web resources, and return findings. Before each tool call, note in one \
+sentence what you are retrieving and how it contributes to the goal. \
+Do not write or modify files.
 """
 
 _COMPUTER_SYSTEM_PROMPT = """\
@@ -200,14 +208,14 @@ _COMPUTER_RULES: list[Rule] = [
 _BUILTIN_AGENTS: dict[str, AgentInfo] = {
     "build": AgentInfo(
         name="build",
-        description="Full-access agent for coding and development tasks.",
+        description="Full-access coding agent — writes code, edits files, runs commands.",
         system_prompt=_BUILD_SYSTEM_PROMPT,
         mode=AgentMode.PRIMARY,
         permission_rules=_BUILD_RULES,
     ),
     "plan": AgentInfo(
         name="plan",
-        description="Read-only agent for code exploration and planning.",
+        description="Read-only coding agent — explores and plans without side effects.",
         system_prompt=_PLAN_SYSTEM_PROMPT,
         mode=AgentMode.PRIMARY,
         permission_rules=_PLAN_RULES,
@@ -215,7 +223,7 @@ _BUILTIN_AGENTS: dict[str, AgentInfo] = {
     ),
     "general": AgentInfo(
         name="general",
-        description="General-purpose research subagent.",
+        description="General-purpose research subagent — gathers information and returns findings.",
         system_prompt=_GENERAL_SYSTEM_PROMPT,
         mode=AgentMode.SUBAGENT,
         permission_rules=_GENERAL_RULES,
@@ -224,8 +232,8 @@ _BUILTIN_AGENTS: dict[str, AgentInfo] = {
     "computer": AgentInfo(
         name="computer",
         description=(
-            "Computer-use agent: sees the screen and controls mouse/keyboard. "
-            "Requires the computer-use extras (mss, pillow, pynput)."
+            "Computer-use agent: observes the screen and controls mouse/keyboard "
+            "to automate desktop workflows. Requires mss, pillow, pynput."
         ),
         system_prompt=_COMPUTER_SYSTEM_PROMPT,
         mode=AgentMode.PRIMARY,

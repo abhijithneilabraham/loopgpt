@@ -187,5 +187,10 @@ def get_sandbox(session_id: str) -> ComputerSandbox:
 
 
 def clear_sandbox(session_id: str) -> None:
-    """Discard the sandbox for *session_id*."""
+    """Discard the sandbox for *session_id* and stop its screen observer."""
     _sandboxes.pop(session_id, None)
+    try:
+        from openvibe.computer.observer import remove_observer
+        remove_observer(session_id)
+    except Exception:
+        pass

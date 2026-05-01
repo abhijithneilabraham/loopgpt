@@ -1,4 +1,4 @@
-"""openvibe — open-source AI coding agent, Python implementation."""
+"""openvibe — open-source AI process agent, Python implementation."""
 
 __version__ = "0.1.0"
 

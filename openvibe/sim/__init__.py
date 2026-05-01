@@ -1,81 +1,45 @@
-"""Enterprise Workflow Environment Simulator for openvibe.
+"""Process stress-testing harness for openvibe.
 
-Fully dynamic: no hardcoded domains. The LLM designs the environment
-from any plain-text context description.
+The harness takes a process description, uses the LLM to scaffold a minimal
+realistic environment on disk, runs openvibe against it, then evaluates the
+run using the process blueprint and filesystem state as evidence.
+
+Nothing is hardcoded — environments and success criteria are derived
+dynamically from the process goal.
 
 Quick start::
 
     from openvibe.llm import LiteLLMBackend
-    from openvibe.sim import SimHarness, HarnessConfig
+    from openvibe.sim import ProcessHarness, ProcessSpec
 
-    harness = SimHarness(
-        llm=LiteLLMBackend(),
-        config=HarnessConfig(
-            context="Customer support for a SaaS billing platform",
-            n_generate=20,
-        ),
-    )
-    report = await harness.run()
-    print(report.to_markdown())
-
-Bring your own scenarios::
-
-    report = await harness.run(scenarios=my_scenarios, env=my_env)
-
-Load a saved dataset::
-
-    from openvibe.sim import Dataset
-    ds = Dataset.load("dataset.jsonl")
-    report = await harness.evaluate_dataset(ds, env=ds.metadata.environment)
-
-Plug into an existing openvibe session (shares the session's LLM backend)::
-
-    harness = SimHarness(llm=session.llm, config=config)
+    harness = ProcessHarness(llm=LiteLLMBackend())
+    run = await harness.run(ProcessSpec(
+        name="p2p",
+        goal="Process purchase requisitions: validate against vendor list, "
+             "generate POs for approved items, log rejections with reasons.",
+        context="Finance workflow, manufacturing company.",
+        difficulty="complex",
+    ))
+    print(run.to_markdown())
 """
 
-from openvibe.sim.scenario import (
-    CriterionScore,
-    Dataset,
-    DatasetMetadata,
-    EvaluationCriterion,
-    EvaluationReport,
-    EvaluationResult,
-    OutcomeStatus,
-    PersonaTemplate,
-    Scenario,
-    ScenarioMetadata,
-    SimEnvironment,
-    SimulationResult,
-    ToolSpec,
-    Turn,
-)
-from openvibe.sim.designer import SimDesigner
-from openvibe.sim.world import WorldSimulator
-from openvibe.sim.evaluator import Evaluator
-from openvibe.sim.harness import HarnessConfig, SimHarness, run_simulation
+from openvibe.sim.spec import EvalResult, ProcessRun, ProcessSpec
+from openvibe.sim.env_builder import EnvironmentBuilder
+from openvibe.sim.runner import ProcessRunner
+from openvibe.sim.evaluator import ProcessEvaluator
+from openvibe.sim.harness import CatalogReport, ProcessHarness, run_process
 
 __all__ = [
-    # Models
-    "CriterionScore",
-    "Dataset",
-    "DatasetMetadata",
-    "EvaluationCriterion",
-    "EvaluationReport",
-    "EvaluationResult",
-    "OutcomeStatus",
-    "PersonaTemplate",
-    "Scenario",
-    "ScenarioMetadata",
-    "SimEnvironment",
-    "SimulationResult",
-    "ToolSpec",
-    "Turn",
+    # Core types
+    "ProcessSpec",
+    "ProcessRun",
+    "EvalResult",
+    "CatalogReport",
     # Components
-    "SimDesigner",
-    "WorldSimulator",
-    "Evaluator",
+    "EnvironmentBuilder",
+    "ProcessRunner",
+    "ProcessEvaluator",
     # Harness
-    "HarnessConfig",
-    "SimHarness",
-    "run_simulation",
+    "ProcessHarness",
+    "run_process",
 ]

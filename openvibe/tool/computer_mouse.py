@@ -92,10 +92,9 @@ class MouseTool(Tool):
     async def execute(self, ctx: ToolContext, params: "MouseTool.Params") -> ToolResult:
         from openvibe.computer.sandbox import ActionType, get_sandbox
         from openvibe.computer.input import screen_size
+        from openvibe.computer.observer import get_observer
 
         # ── Retina / HiDPI coordinate scaling ─────────────────────────────
-        # Screenshots may be downscaled to ≤1920 px wide; logical screen
-        # pixels can differ (e.g. 1440-wide on a Retina MacBook).
         scaled = params
         scale_note = ""
         if params.image_width and params.image_height:
@@ -115,7 +114,7 @@ class MouseTool(Tool):
                         f" @ {sx:.3f}×{sy:.3f}]"
                     )
             except Exception:
-                pass  # best-effort; never block the action
+                pass
         # ──────────────────────────────────────────────────────────────────
 
         sandbox = get_sandbox(ctx.session_id)
@@ -128,11 +127,15 @@ class MouseTool(Tool):
         if not sandbox.is_coordinate_allowed(scaled.x, scaled.y):
             return ToolResult(
                 title="Mouse action denied",
-                output=(
-                    f"({scaled.x}, {scaled.y}) is outside the permitted screen region."
-                ),
+                output=f"({scaled.x}, {scaled.y}) is outside the permitted screen region.",
                 error=True,
             )
+
+        # Capture focus state before the action
+        observer = get_observer(ctx.session_id)
+        focus_before = await asyncio.get_event_loop().run_in_executor(
+            None, observer.current_focus
+        )
 
         action_params = {
             "action": params.action, "x": params.x, "y": params.y,
@@ -145,6 +148,12 @@ class MouseTool(Tool):
         except Exception as exc:
             await sandbox.record_action(ActionType.MOUSE_CLICK, params=action_params, error=str(exc))
             return ToolResult(title="Mouse error", output=str(exc), error=True)
+
+        # Capture focus + screen diff after the action
+        action_label = f"mouse {params.action} at ({params.x},{params.y})"
+        screen_ctx = await asyncio.get_event_loop().run_in_executor(
+            None, observer.record_action, action_label
+        )
 
         action_type_map = {
             "move": ActionType.MOUSE_MOVE,
@@ -160,9 +169,16 @@ class MouseTool(Tool):
             params=action_params,
             result=result_msg,
         )
+
+        output_parts = [result_msg + scale_note]
+        if focus_before:
+            output_parts.append(f"Before: {focus_before}")
+        if screen_ctx:
+            output_parts.append(screen_ctx)
+
         return ToolResult(
             title=f"Mouse: {params.action}",
-            output=result_msg + scale_note,
+            output="\n".join(output_parts),
         )
 
     @staticmethod

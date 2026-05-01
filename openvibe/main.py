@@ -30,7 +30,7 @@ from rich.table import Table
 
 app = typer.Typer(
     name="openvibe",
-    help="Open-source AI coding agent.",
+    help="Open-source AI process agent.",
     no_args_is_help=False,
     add_completion=False,
 )

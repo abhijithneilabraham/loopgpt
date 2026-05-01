@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "openvibe"
 version = "0.1.0"
-description = "Open-source AI coding agent — openvibe"
+description = "Open-source AI process agent — openvibe"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -17,7 +17,6 @@ dependencies = [
     "pydantic>=2.9.0",
     "pydantic-settings>=2.5.0",
     "litellm>=1.52.0",
-    "mcp>=1.1.0",
     "httpx>=0.27.0",
     "aiofiles>=24.0.0",
     "typer>=0.12.0",

@@ -582,185 +582,220 @@ def cmd_config(ctx: CommandContext) -> CommandResult:
     return CommandResult(output="\n".join(lines))
 
 
-@command("sim", "Enterprise workflow simulation harness")
+@command("sim", "Stress-test a process by running openvibe against a real environment")
 def cmd_sim(ctx: CommandContext) -> CommandResult:
-    """Show /sim help. Use /sim run [context] to start a simulation."""
+    """Stress-test a process. The harness builds a realistic environment from
+    your description, runs openvibe against it, and evaluates the result.
+
+    /sim run <process description>       — run any process (description is the goal)
+    /sim run --keep <description>        — keep the temp environment for inspection
+    /sim run --hard <description>        — plant adversarial traps in the environment
+    /sim help                            — show difficulty levels and usage tips
+    """
+    args = ctx.args.strip()
+    if not args:
+        return CommandResult(
+            output=(
+                "[bold]Process Stress-Test Harness[/bold]\n\n"
+                "Builds a realistic environment from your description, runs openvibe\n"
+                "against it, then evaluates the result. Nothing is hardcoded.\n\n"
+                "[bold]Usage:[/bold]\n"
+                "  [cyan]/sim run[/cyan] <process description>\n"
+                "  [cyan]/sim run --keep[/cyan] <description>   — preserve env after run\n"
+                "  [cyan]/sim run --hard[/cyan] <description>   — adversarial mode\n"
+                "  [cyan]/sim help[/cyan]                       — difficulty guide\n\n"
+                "[bold]Examples:[/bold]\n"
+                "  /sim run process purchase requisitions through the full P2P workflow\n"
+                "  /sim run --keep investigate the incident logs and write a runbook\n"
+                "  /sim run --hard migrate legacy CRM export to normalised schema\n"
+            )
+        )
+    return CommandResult(output="[dim]Use /sim run or /sim help[/dim]")
+
+
+@subcommand("sim", "help", "Show difficulty levels and usage guide")
+def cmd_sim_help(ctx: CommandContext) -> CommandResult:
     return CommandResult(
         output=(
-            "[bold]Enterprise Workflow Simulation Harness[/bold]\n\n"
-            "No hardcoded domains — describe any workflow in plain text.\n\n"
-            "[bold]Subcommands:[/bold]\n"
-            "  [cyan]/sim run[/cyan] [context]     — design + generate + simulate + evaluate\n"
-            "  [cyan]/sim design[/cyan] [context]  — design and preview the environment only\n"
-            "  [cyan]/sim generate[/cyan] [context] [n] — generate dataset (no simulation)\n"
-            "  [cyan]/sim load[/cyan] [path]       — load saved dataset and evaluate\n\n"
-            "[bold]Examples:[/bold]\n"
-            "  /sim run customer support for a SaaS billing platform\n"
-            "  /sim run HR onboarding at a 500-person tech company\n"
-            "  /sim generate B2B sales pipeline 20\n"
-            "  /sim load ./my_dataset.jsonl\n\n"
-            "[dim]Or use [bold]/simulate[/bold] (skill) to run via the AI agent.[/dim]"
+            "[bold]Process Stress-Test — Difficulty Guide[/bold]\n\n"
+            "[green]foundational[/green]  Linear process, clear inputs/outputs.\n"
+            "               ~5–10 tool calls. Use for basic workflow validation.\n\n"
+            "[yellow]complex[/yellow]       Branching logic, ambiguous edges, judgment required.\n"
+            "               ~10–20 tool calls. Default level for /sim run.\n\n"
+            "[red]adversarial[/red]   Planted traps, conflicting data, wrong assumptions.\n"
+            "               Use --hard flag to enable.\n\n"
+            "[bold]Flags:[/bold]\n"
+            "  --keep   Preserve the generated environment after the run\n"
+            "  --hard   Enable adversarial mode (trap-planting)\n\n"
+            "[bold]The harness:[/bold]\n"
+            "  1. Sends your goal to the LLM → generates setup.sh\n"
+            "  2. Runs setup.sh to build a realistic filesystem environment\n"
+            "  3. Runs openvibe against that environment with your goal\n"
+            "  4. LLM evaluates the result using the process blueprint + filesystem\n\n"
+            "[dim]Nothing is hardcoded. Every environment is generated from your description.[/dim]"
         )
     )
 
 
-@subcommand("sim", "design", "Design and preview a simulation environment")
-def cmd_sim_design(ctx: CommandContext) -> CommandResult:
-    import asyncio
-    from openvibe.llm import LiteLLMBackend, resolve_model
-    from openvibe.sim import HarnessConfig, SimHarness
-
-    context = ctx.args.strip()
-    config = HarnessConfig(context=context)
-    harness = SimHarness(config=config, llm=LiteLLMBackend())
-
-    try:
-        env = asyncio.run(harness.design())
-    except Exception as exc:
-        return CommandResult(output=f"[red]Design failed:[/red] {exc}")
-
-    lines = [
-        f"[bold]{env.name}[/bold]",
-        f"[dim]{env.description}[/dim]",
-        "",
-        f"[bold]Personas ({len(env.personas)}):[/bold]",
-    ]
-    for p in env.personas:
-        lines.append(f"  [cyan]{p.role}[/cyan] — {p.background[:80]}")
-    lines += ["", f"[bold]Tools ({len(env.tools)}):[/bold]"]
-    for t in env.tools:
-        lines.append(f"  [cyan]{t.name}[/cyan] — {t.description[:70]}")
-    lines += ["", "[bold]Evaluation criteria:[/bold]"]
-    for c in env.evaluation_criteria:
-        lines.append(f"  {c.name} ({c.weight:.0%}) — {c.description[:60]}")
-    lines += ["", "[bold]Constraints:[/bold]"]
-    for constraint in env.constraints[:5]:
-        lines.append(f"  • {constraint}")
-    return CommandResult(output="\n".join(lines))
-
-
-@subcommand("sim", "run", "Run a full simulation: design → generate → simulate → evaluate")
+@subcommand("sim", "run", "Run a process stress-test")
 def cmd_sim_run(ctx: CommandContext) -> CommandResult:
     import asyncio
-    from openvibe.llm import LiteLLMBackend
-    from openvibe.sim import HarnessConfig, SimHarness
+    from openvibe.sim import ProcessHarness, ProcessSpec
 
-    # Parse: last token that's a digit is n_scenarios; rest is context
-    parts = ctx.args.strip().split()
-    n = 5
-    if parts and parts[-1].isdigit():
-        n = int(parts[-1])
-        parts = parts[:-1]
-    context = " ".join(parts)
+    args = ctx.args.strip()
+    keep = False
+    adversarial = False
+    if "--keep" in args:
+        keep = True
+        args = args.replace("--keep", "").strip()
+    if "--hard" in args:
+        adversarial = True
+        args = args.replace("--hard", "").strip()
 
-    progress_output: list[str] = []
+    if not args:
+        return CommandResult(output="[red]Usage: /sim run <process description>[/red]")
 
-    def on_progress(msg: str, current: int, total: int) -> None:
-        progress_output.append(f"[{current}/{total}] {msg}")
+    difficulty = "adversarial" if adversarial else "complex"
+    spec = ProcessSpec(
+        name=args[:40].replace(" ", "_").lower(),
+        goal=args,
+        difficulty=difficulty,
+    )
 
-    config = HarnessConfig(context=context, n_generate=n)
-    harness = SimHarness(config=config, llm=LiteLLMBackend(), on_progress=on_progress)
+    progress_lines: list[str] = []
+
+    def on_progress(msg: str) -> None:
+        progress_lines.append(f"[dim]{msg}[/dim]")
+
+    config = _config(ctx)
+    harness = ProcessHarness(
+        config=config,
+        on_progress=on_progress,
+        keep_env=keep,
+    )
 
     try:
-        report = asyncio.run(harness.run())
+        run = asyncio.run(harness.run(spec))
     except Exception as exc:
         return CommandResult(
-            output=f"[red]Simulation failed:[/red] {exc}\n" + "\n".join(progress_output)
+            output=f"[red]Simulation failed:[/red] {exc}\n" + "\n".join(progress_lines)
         )
 
+    status_color = "green" if run.passed else "red"
+    status = "PASS" if run.passed else "FAIL"
     lines = [
-        f"[bold]Simulation Report: {report.dataset_name}[/bold]",
-        f"[dim]{report.context[:100]}[/dim]",
+        f"[bold]{run.spec_name}[/bold]  [{run.difficulty}]",
+        f"[{status_color}]{status}[/{status_color}]  "
+        f"score: [bold]{run.score:.2f}[/bold]  |  "
+        f"tool calls: {run.tool_calls}  |  "
+        f"branches: {run.dag_branches}  |  "
+        f"{run.elapsed_seconds:.1f}s",
         "",
-        f"Scenarios: {report.evaluated}/{report.total_scenarios}",
-        f"Mean score: [bold]{report.mean_total_score:.3f}[/bold]",
-        f"Pass rate (≥0.7): [bold]{report.pass_rate:.1%}[/bold]",
-        f"Outcome accuracy: {report.outcome_accuracy:.1%}",
-        "",
-        "[bold]By difficulty:[/bold]",
     ]
-    for diff, score in sorted(report.by_difficulty.items()):
-        color = "green" if score >= 0.7 else "yellow" if score >= 0.5 else "red"
-        lines.append(f"  {diff}: [{color}]{score:.3f}[/{color}]")
-    lines += ["", "[bold]By criterion:[/bold]"]
-    for crit, score in sorted(report.by_criterion.items(), key=lambda x: -x[1]):
-        lines.append(f"  {crit}: {score:.3f}")
+    if run.evaluation:
+        lines.append(run.evaluation)
+        lines.append("")
+    if run.strengths:
+        lines.append("[bold dim]What worked:[/bold dim]")
+        for s in run.strengths:
+            lines.append(f"  [green]✓[/green] {s}")
+        lines.append("")
+    if run.gaps:
+        lines.append("[bold dim]Gaps:[/bold dim]")
+        for g in run.gaps:
+            lines.append(f"  [yellow]✗[/yellow] {g}")
+        lines.append("")
+    if run.env_dir:
+        lines.append(f"[dim]Environment preserved at: {run.env_dir}[/dim]")
+    if run.run_error:
+        lines.append(f"[red]Run error:[/red] {run.run_error}")
+
     return CommandResult(output="\n".join(lines))
 
 
-@subcommand("sim", "generate", "Design environment and generate dataset (no simulation)")
-def cmd_sim_generate(ctx: CommandContext) -> CommandResult:
-    import asyncio
-    from openvibe.llm import LiteLLMBackend
-    from openvibe.sim import HarnessConfig, SimHarness
+@command("blueprint", "View or export the process blueprint for this session")
+def cmd_blueprint(ctx: CommandContext) -> CommandResult:
+    """Show the current process blueprint summary.
 
-    parts = ctx.args.strip().split()
-    n = 10
-    output = None
-    if parts and parts[-1].isdigit():
-        n = int(parts[-1])
-        parts = parts[:-1]
-    if parts and parts[-1].startswith("/"):
-        output = parts[-1]
-        parts = parts[:-1]
-    context = " ".join(parts)
+    /blueprint          — show step summary
+    /blueprint export   — save process-blueprint.json to the project directory
+    /blueprint undo     — mark the last step undone (starts a new branch)
+    """
+    from openvibe.session.blueprint import get_blueprint
 
-    config = HarnessConfig(context=context, n_generate=n, output_dir=output)
-    harness = SimHarness(config=config, llm=LiteLLMBackend())
+    bp = get_blueprint(ctx.session.info.id)
+    if bp is None or not bp.nodes:
+        return CommandResult(
+            output="[dim]No steps recorded yet. The blueprint builds as the process runs.[/dim]"
+        )
 
-    try:
-        env = asyncio.run(harness.design())
-        dataset = asyncio.run(harness.generate_dataset(env, n=n))
-    except Exception as exc:
-        return CommandResult(output=f"[red]Generation failed:[/red] {exc}")
-
-    summary = dataset.summary()
     lines = [
-        f"[bold]Dataset:[/bold] {summary['name']}",
-        f"Environment: [cyan]{env.name}[/cyan]",
-        f"Scenarios: {summary['total']}",
-        f"By difficulty: {json.dumps(summary['by_difficulty'])}",
+        f"[bold]Process blueprint[/bold]  [dim]goal: {bp.goal[:80]}[/dim]\n"
     ]
-    if output:
-        lines.append(f"Saved to: [dim]{output}[/dim]")
+    branch_colors = ["cyan", "yellow", "magenta", "blue", "green"]
+    for n in bp.nodes.values():
+        status_icon = {
+            "completed": "[green]●[/green]",
+            "running": "[yellow]◎[/yellow]",
+            "failed": "[red]✗[/red]",
+            "undone": "[dim]○[/dim]",
+        }.get(n.status, "?")
+        color = branch_colors[n.branch % len(branch_colors)]
+        branch_tag = f" [dim](branch {n.branch})[/dim]" if n.branch else ""
+        lines.append(
+            f"  {status_icon} [{color}]{n.action}[/{color}]{branch_tag}"
+        )
+        if n.purpose:
+            lines.append(f"     [dim]↳ {n.purpose}[/dim]")
+
+    completed = sum(1 for n in bp.nodes.values() if n.status == "completed")
+    total = len(bp.nodes)
+    lines.append(f"\n[dim]{completed}/{total} steps completed[/dim]")
+    lines.append(
+        "\n[dim]Use [bold]/blueprint export[/bold] to save a resumable file, "
+        "or [bold]/blueprint undo[/bold] to branch from the last step.[/dim]"
+    )
     return CommandResult(output="\n".join(lines))
 
 
-@subcommand("sim", "load", "Load a saved dataset JSONL and evaluate it")
-def cmd_sim_load(ctx: CommandContext) -> CommandResult:
-    import asyncio
-    from openvibe.llm import LiteLLMBackend
-    from openvibe.sim import Dataset, HarnessConfig, SimHarness
+@subcommand("blueprint", "export", "Export process blueprint to project-blueprint.json")
+def cmd_blueprint_export(ctx: CommandContext) -> CommandResult:
+    from openvibe.session.blueprint import get_blueprint
 
-    path = ctx.args.strip()
-    if not path:
-        return CommandResult(output="[red]Usage: /sim load <path/to/dataset.jsonl>[/red]")
+    bp = get_blueprint(ctx.session.info.id)
+    if bp is None or not bp.nodes:
+        return CommandResult(output="[dim]No steps to export yet.[/dim]")
 
-    try:
-        dataset = Dataset.load(path)
-    except Exception as exc:
-        return CommandResult(output=f"[red]Failed to load dataset:[/red] {exc}")
-
-    env = dataset.metadata.environment
-    if env is None:
-        return CommandResult(
-            output="[red]Dataset has no embedded environment.[/red] Regenerate it with /sim generate."
-        )
-
-    config = HarnessConfig(context=dataset.metadata.context)
-    harness = SimHarness(config=config, llm=LiteLLMBackend())
-
-    try:
-        report = asyncio.run(harness.evaluate_dataset(dataset, env))
-    except Exception as exc:
-        return CommandResult(output=f"[red]Evaluation failed:[/red] {exc}")
-
+    project = _project_dir(ctx)
+    path = bp.save(project)
     return CommandResult(
         output=(
-            f"[bold]Evaluation: {report.dataset_name}[/bold]\n"
-            f"Mean score: {report.mean_total_score:.3f} | "
-            f"Pass rate: {report.pass_rate:.1%} | "
-            f"Outcome accuracy: {report.outcome_accuracy:.1%}"
+            f"[green]Process blueprint saved:[/green] {path}\n\n"
+            "[dim]To resume this process in a new session, start openvibe and paste "
+            "the contents of that file as your first message. The agent will read "
+            "the completed steps and pick up from where it left off.[/dim]"
+        )
+    )
+
+
+@subcommand("blueprint", "undo", "Mark the last completed step as undone")
+def cmd_blueprint_undo(ctx: CommandContext) -> CommandResult:
+    from openvibe.session.blueprint import get_blueprint
+
+    bp = get_blueprint(ctx.session.info.id)
+    if bp is None or not bp.current_node_id:
+        return CommandResult(output="[dim]No step to undo.[/dim]")
+
+    node = bp.nodes.get(bp.current_node_id)
+    if node is None:
+        return CommandResult(output="[dim]No step to undo.[/dim]")
+
+    bp.undo_node(node.id)
+    return CommandResult(
+        output=(
+            f"[yellow]Marked as undone:[/yellow] {node.action}\n"
+            f"[dim]The process is now on branch {bp.current_branch}. "
+            "Tell the agent to try a different approach.[/dim]"
         )
     )
 
@@ -798,4 +833,184 @@ def cmd_init(ctx: CommandContext) -> CommandResult:
         output=f"[green]Created:[/green] {config_path}\n\n"
         f"[dim]{json.dumps(template, indent=2)}[/dim]\n\n"
         f"[dim]Edit this file to customize your project settings.[/dim]"
+    )
+
+
+# ---------------------------------------------------------------------------
+# /learn — record and replay screen interactions
+# ---------------------------------------------------------------------------
+
+
+
+@command("learn", "Record and replay screen interactions")
+def cmd_learn(ctx: CommandContext) -> CommandResult:
+    """Record human screen interactions and replay them exactly.
+
+    /learn start "task description"  — start recording
+    /learn stop                      — stop and save to ./openvibe_recordings/
+    /learn list                      — list saved recordings
+    /learn replay <name>             — replay (click mouse to interrupt)
+    /learn delete <name>             — delete a recording
+    """
+    from openvibe.computer.recorder import get_recorder, recordings_dir
+    recorder = get_recorder()
+    status = (
+        "[yellow]● Recording in progress[/yellow]" if recorder.is_recording
+        else "[dim]○ Not recording[/dim]"
+    )
+    d = recordings_dir()
+    return CommandResult(
+        output=(
+            f"[bold]learn[/bold]  {status}\n\n"
+            "  [cyan]/learn start[/cyan] [italic]\"task\"[/italic]  — begin recording\n"
+            "  [cyan]/learn stop[/cyan]              — finish and save\n"
+            "  [cyan]/learn list[/cyan]              — show saved recordings\n"
+            "  [cyan]/learn replay[/cyan] [italic]<name>[/italic]  — replay exactly (click to cancel)\n"
+            "  [cyan]/learn delete[/cyan] [italic]<name>[/italic]  — remove recording\n\n"
+            f"[dim]Saved to: {d}[/dim]"
+        )
+    )
+
+
+
+
+@subcommand("learn", "start", "Start recording screen interactions")
+def cmd_learn_start(ctx: CommandContext) -> CommandResult:
+    from openvibe.computer.recorder import get_recorder, name_from_prompt
+
+    recorder = get_recorder()
+    if recorder.is_recording:
+        return CommandResult(
+            output="[yellow]Already recording.[/yellow] Use [cyan]/learn stop[/cyan] to finish."
+        )
+
+    prompt = ctx.args.strip().strip('"').strip("'")
+    if not prompt:
+        return CommandResult(
+            output="[red]Usage:[/red] /learn start [italic]\"task description\"[/italic]"
+        )
+
+    name = name_from_prompt(prompt)
+    try:
+        recorder.start(prompt, name)
+    except Exception as exc:
+        return CommandResult(output=f"[red]Error:[/red] {exc}")
+
+    return CommandResult(
+        output=(
+            f"[green]● Recording started[/green]  [bold]{name}[/bold]\n"
+            f"  Task: {prompt}\n\n"
+            "Perform your task now, then run [cyan]/learn stop[/cyan]."
+        )
+    )
+
+
+@subcommand("learn", "stop", "Stop recording and save")
+def cmd_learn_stop(ctx: CommandContext) -> CommandResult:
+    from openvibe.computer.recorder import get_recorder
+
+    recorder = get_recorder()
+    if not recorder.is_recording:
+        return CommandResult(
+            output="[yellow]Not currently recording.[/yellow] Use [cyan]/learn start[/cyan] first."
+        )
+
+    try:
+        recording = recorder.stop()
+    except Exception as exc:
+        return CommandResult(output=f"[red]Error stopping:[/red] {exc}")
+
+    path = recording.save()
+    return CommandResult(
+        output=(
+            f"[green]Saved:[/green] [bold]{recording.name}[/bold]\n"
+            f"  Events:   {len(recording.events)}\n"
+            f"  Duration: {recording.duration:.1f}s\n"
+            f"  File:     {path}\n\n"
+            f"Replay: [cyan]/learn replay[/cyan] [italic]{recording.name}[/italic]"
+        )
+    )
+
+
+@subcommand("learn", "list", "List saved recordings")
+def cmd_learn_list(ctx: CommandContext) -> CommandResult:
+    from openvibe.computer.recorder import Recording, recordings_dir
+
+    recs = Recording.list_all()
+    if not recs:
+        return CommandResult(
+            output=(
+                "[dim]No recordings yet.[/dim]\n"
+                "Start one: [cyan]/learn start[/cyan] [italic]\"your task\"[/italic]\n\n"
+                f"[dim]Storage: {recordings_dir()}[/dim]"
+            )
+        )
+
+    lines = [f"[bold]Recordings[/bold] ({len(recs)})  [dim]{recordings_dir()}[/dim]\n"]
+    for r in recs:
+        lines.append(f"  [bold cyan]{r.name}[/bold cyan]")
+        lines.append(f"    [italic]{r.prompt}[/italic]")
+        lines.append(f"    [dim]{r.recorded_at[:19]}  {r.duration:.1f}s[/dim]")
+        lines.append("")
+    lines.append("[dim]Replay: /learn replay <name>[/dim]")
+    return CommandResult(output="\n".join(lines))
+
+
+@subcommand("learn", "replay", "Replay a saved recording")
+def cmd_learn_replay(ctx: CommandContext) -> CommandResult:
+    from openvibe.computer.recorder import Recording
+
+    query = ctx.args.strip().strip('"').strip("'")
+    if not query:
+        return CommandResult(
+            output="[red]Usage:[/red] /learn replay [italic]<name>[/italic]"
+        )
+
+    recording = Recording.load(query)
+    if recording is None:
+        return CommandResult(
+            output=f"[red]Not found:[/red] {query!r}\n"
+                   "Run [cyan]/learn list[/cyan] to see saved recordings."
+        )
+    if not recording.events:
+        return CommandResult(
+            output="[yellow]Recording has no events.[/yellow] Re-record with [cyan]/learn start[/cyan]."
+        )
+
+    try:
+        outcome = recording.replay_with_vision()
+    except Exception as exc:
+        return CommandResult(output=f"[red]Replay error:[/red] {exc}")
+
+    clicks = sum(1 for e in recording.events if e.type == "click" and e.data.get("pressed"))
+    color = "green" if outcome == "done" else "yellow"
+    note = "" if outcome == "done" else "  [dim](stopped — human input detected)[/dim]"
+    return CommandResult(
+        output=(
+            f"[{color}]{outcome.capitalize()}.[/{color}] "
+            f"[bold]{recording.name}[/bold]  "
+            f"[dim]({len(recording.events)} events, {clicks} clicks, {recording.duration:.1f}s)[/dim]"
+            f"{note}"
+        )
+    )
+
+
+@subcommand("learn", "delete", "Delete a saved recording")
+def cmd_learn_delete(ctx: CommandContext) -> CommandResult:
+    from openvibe.computer.recorder import recordings_dir
+
+    name = ctx.args.strip().strip('"').strip("'")
+    if not name:
+        return CommandResult(
+            output="[red]Usage:[/red] /learn delete [italic]<name>[/italic]"
+        )
+
+    d = recordings_dir()
+    for path in [d / name, d / f"{name}.json"]:
+        if path.exists():
+            path.unlink()
+            return CommandResult(output=f"[green]Deleted:[/green] {name}")
+
+    return CommandResult(
+        output=f"[red]Not found:[/red] {name!r}  (run [cyan]/learn list[/cyan])"
     )

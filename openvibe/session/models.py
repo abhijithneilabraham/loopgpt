@@ -83,6 +83,11 @@ class ToolState(BaseModel):
     call_id: str = ""
     tool_name: str = ""
     input: dict[str, Any] = Field(default_factory=dict)
+    # Why this tool call is being made in the context of the overall goal.
+    # Extracted from the agent's preceding text — no extra tokens.
+    purpose: str = ""
+    # Brief label of the action being performed (e.g. "searching for X")
+    action: str = ""
     # Populated when the call finishes
     output: str | None = None
     error: str | None = None

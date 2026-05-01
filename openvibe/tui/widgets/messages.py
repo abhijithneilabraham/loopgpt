@@ -54,6 +54,11 @@ class ToolWidget(Widget):
         padding: 0 0 0 2;
         color: $text-muted;
     }
+    ToolWidget .purpose {
+        height: auto;
+        padding-left: 4;
+        color: $text-disabled;
+    }
     ToolWidget .output {
         height: auto;
         padding-left: 4;
@@ -71,16 +76,28 @@ class ToolWidget(Widget):
 
     def compose(self) -> ComposeResult:
         yield Static(self._header_markup(), id="header")
+        yield Static(self._purpose_markup(), classes="purpose", id="purpose")
         yield Static("", classes="output", id="output")
 
     def _header_markup(self) -> str:
         status = self._state.get("status", "pending")
         icon = _STATUS_ICON.get(status, "?")
         style = _STATUS_STYLE.get(status, "white")
-        name = self._state.get("tool_name", "unknown")
-        argument = self._extract_argument()
-        arg_part = f" [dim]{_escape(argument)}[/dim]" if argument else ""
-        return f"[{style}]{icon}[/{style}] [dim]{name}[/dim]{arg_part}"
+        # Prefer action label; fall back to raw tool name + primary arg
+        action = self._state.get("action", "")
+        if action:
+            display = action
+        else:
+            name = self._state.get("tool_name", "unknown")
+            argument = self._extract_argument()
+            display = f"{name} {argument}".strip() if argument else name
+        return f"[{style}]{icon}[/{style}] [dim]{_escape(display)}[/dim]"
+
+    def _purpose_markup(self) -> str:
+        purpose = self._state.get("purpose", "")
+        if not purpose:
+            return ""
+        return f"[dim]↳ {_escape(purpose)}[/dim]"
 
     def _extract_argument(self) -> str:
         """Return a short display string for the primary tool argument."""
@@ -103,6 +120,7 @@ class ToolWidget(Widget):
     def update_state(self, state: dict[str, Any]) -> None:
         self._state = state
         self.query_one("#header", Static).update(self._header_markup())
+        self.query_one("#purpose", Static).update(self._purpose_markup())
         if self._expanded:
             self._refresh_output()
 

@@ -72,6 +72,7 @@ class KeyboardTool(Tool):
 
     async def execute(self, ctx: ToolContext, params: "KeyboardTool.Params") -> ToolResult:
         from openvibe.computer.sandbox import ActionType, get_sandbox
+        from openvibe.computer.observer import get_observer
 
         if params.action == "type":
             arg_desc = f"type: {(params.text or '')[:60]!r}"
@@ -88,6 +89,12 @@ class KeyboardTool(Tool):
                 description=f"Keyboard {arg_desc}",
             )
 
+        # Capture focus before: keyboard input goes to whatever is focused NOW
+        observer = get_observer(ctx.session_id)
+        focus_before = await asyncio.get_event_loop().run_in_executor(
+            None, observer.current_focus
+        )
+
         try:
             loop = asyncio.get_event_loop()
             result_msg = await loop.run_in_executor(None, self._do_action, params)
@@ -99,6 +106,11 @@ class KeyboardTool(Tool):
             )
             return ToolResult(title="Keyboard error", output=str(exc), error=True)
 
+        # Capture focus + screen diff after the action
+        screen_ctx = await asyncio.get_event_loop().run_in_executor(
+            None, observer.record_action, f"keyboard {arg_desc}"
+        )
+
         action_type_map = {
             "type": ActionType.KEYBOARD_TYPE,
             "press": ActionType.KEYBOARD_PRESS,
@@ -109,7 +121,14 @@ class KeyboardTool(Tool):
             params={"action": params.action},
             result=result_msg,
         )
-        return ToolResult(title=f"Keyboard: {params.action}", output=result_msg)
+
+        output_parts = [result_msg]
+        if focus_before:
+            output_parts.append(f"Input went to: {focus_before}")
+        if screen_ctx:
+            output_parts.append(screen_ctx)
+
+        return ToolResult(title=f"Keyboard: {params.action}", output="\n".join(output_parts))
 
     @staticmethod
     def _do_action(params: "KeyboardTool.Params") -> str:

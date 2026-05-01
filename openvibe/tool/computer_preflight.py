@@ -70,9 +70,17 @@ class PreFlightTool(Tool):
 
     async def execute(self, ctx: ToolContext, params: "PreFlightTool.Params") -> ToolResult:
         from openvibe.computer.sandbox import get_sandbox
+        from openvibe.computer.observer import get_observer
         from openvibe.permission.permission import PermissionDenied, PermissionRejected
 
         sandbox = get_sandbox(ctx.session_id)
+
+        # Start live screen observer for this session (no-op if already running).
+        try:
+            observer = get_observer(ctx.session_id)
+            observer.start()
+        except Exception:
+            pass
 
         approved: list[str] = []
         denied: list[str] = []

@@ -229,6 +229,8 @@ def create_default_registry() -> ToolRegistry:
     from openvibe.tool.computer_preflight import PreFlightTool
     from openvibe.tool.computer_screenshot import ScreenshotTool
     from openvibe.tool.computer_ui import UITool
+    from openvibe.tool.computer_watch import WatchScreenTool
+    from openvibe.tool.computer_learn import LearnTool
     from openvibe.tool.sim_tool import SimTool
 
     registry = ToolRegistry()
@@ -250,6 +252,8 @@ def create_default_registry() -> ToolRegistry:
         MouseTool(),
         KeyboardTool(),
         AppTool(),
+        WatchScreenTool(),
+        LearnTool(),
         SimTool(),
     ]:
         registry.register(tool)

@@ -44,6 +44,8 @@ from openvibe.session.models import (APIError, AssistantError, AuthError,
                                      TextDeltaEvent, TextPart, ToolPart,
                                      ToolState, ToolStateChangedEvent,
                                      TurnCompletedEvent, now_iso)
+from openvibe.session.blueprint import (build_action_label, extract_purpose,
+                                         get_blueprint, init_blueprint)
 from openvibe.tool.base import Tool, ToolContext, ToolRegistry, ToolResult
 
 if TYPE_CHECKING:
@@ -135,8 +137,12 @@ class SessionProcessor:
         # 4. Permission rules for this agent
         rules: list["Rule"] = list(agent.permission_rules)
 
-        # 5. On the first turn of a new session, check whether local models
-        #    are available and ask once for routing permission if needed.
+        # 5a. Initialise the process blueprint for this session.
+        #     The user's text becomes the session goal on the first turn.
+        init_blueprint(session.id, user_text)
+
+        # 5b. On the first turn of a new session, check whether local models
+        #     are available and ask once for routing permission if needed.
         if len(history) <= 1 and session.id not in self._routing_asked:
             await self._maybe_ask_routing_permission(session)
 
@@ -240,6 +246,12 @@ class SessionProcessor:
         text_part_index: int | None = None
         reasoning_part_index: int | None = None
         tool_part_indices: dict[int, int] = {}  # llm_index → parts_index
+        # Track last accumulated text to extract purpose before each tool call
+        _last_text_snapshot: str = ""
+        # Map llm_index → blueprint node_id so we can complete/fail nodes
+        _node_ids: dict[int, str] = {}
+
+        blueprint = get_blueprint(session.id)
 
         t0 = time.monotonic()
 
@@ -260,6 +272,11 @@ class SessionProcessor:
                         await _announce()
                         text_part_index = await self._append_text(
                             assistant_msg, text_part_index, content, t0
+                        )
+                        _last_text_snapshot = (
+                            assistant_msg.parts[text_part_index].content
+                            if text_part_index is not None
+                            else ""
                         )
                         await self._bus.publish(
                             TextDeltaEvent(
@@ -286,11 +303,15 @@ class SessionProcessor:
                         await _announce()
                         part_idx = len(assistant_msg.parts)
                         tool_part_indices[idx] = part_idx
+                        # Extract purpose from the agent's preceding text
+                        purpose = extract_purpose(_last_text_snapshot)
+                        _last_text_snapshot = ""  # reset for next tool
                         tool_part = ToolPart(
                             state=ToolState(
                                 status=ToolStateStatus.PENDING,
                                 call_id=call_id,
                                 tool_name=name,
+                                purpose=purpose,
                                 time_start=time.monotonic() - t0,
                             )
                         )
@@ -328,9 +349,23 @@ class SessionProcessor:
                         tool_part.state.call_id = call_id
                         tool_part.state.tool_name = name
                         tool_part.state.input = parsed_args
+                        # Build action label now that we have the full args
+                        action = build_action_label(name, parsed_args)
+                        tool_part.state.action = action
                         session_store.upsert_part(
                             self._db, assistant_msg.id, part_idx, tool_part
                         )
+
+                        # Register step in the process blueprint
+                        if blueprint is not None:
+                            bp_node = blueprint.add_node(
+                                tool_name=name,
+                                action=action,
+                                purpose=tool_part.state.purpose,
+                                parent_id=blueprint.current_node_id,
+                                branch=blueprint.current_branch,
+                            )
+                            _node_ids[idx] = bp_node.id
 
                         # Doom-loop check
                         doom_key = f"{name}:{args}"
@@ -375,6 +410,18 @@ class SessionProcessor:
                         tool_part.state.time_end = time.monotonic() - t0
                         if result.error:
                             tool_part.state.error = result.output
+
+                        # Update blueprint node and auto-save
+                        if blueprint is not None and (node_id := _node_ids.get(idx)):
+                            output_summary = (result.output or "")[:120]
+                            if result.error:
+                                blueprint.fail_node(node_id, output_summary)
+                            else:
+                                blueprint.complete_node(node_id, output_summary)
+                            try:
+                                blueprint.save(session.directory)
+                            except Exception:
+                                pass  # never block on blueprint I/O
 
                         # Persist the first image attachment (e.g. screenshot)
                         # so it can be forwarded to the LLM on the next turn.
