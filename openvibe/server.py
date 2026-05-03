@@ -234,7 +234,7 @@ def create_app(
     app = FastAPI(
         title="openvibe",
         version="0.1.0",
-        description="Open-source AI process agent API",
+        description="Open-source AI coding agent API",
         lifespan=lifespan,
     )
 

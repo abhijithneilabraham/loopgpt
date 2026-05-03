@@ -18,7 +18,7 @@ _LOGO = r"""
   ╚████╔╝ ██║██████╔╝███████╗
    ╚═══╝  ╚═╝╚═════╝ ╚══════╝"""
 
-_TAGLINE = "AI process agent for your terminal"
+_TAGLINE = "AI coding agent for your terminal"
 
 _HELP = """\
 [#888888]Ctrl+N[/#888888] new session    \
