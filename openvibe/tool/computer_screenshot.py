@@ -1,8 +1,4 @@
-"""ScreenshotTool — capture the current screen.
-
-The LLM receives a base-64 PNG attachment so it can *see* the current state
-of the desktop before deciding which action to take next.
-"""
+"""ScreenshotTool — capture the current screen as a base-64 PNG for the LLM."""
 
 from __future__ import annotations
 
@@ -100,9 +96,7 @@ class ScreenshotTool(Tool):
                 error=True,
             )
 
-        # Compute diff against the previous screenshot stored in the sandbox.
-        # This gives the LLM concrete change-detection feedback rather than
-        # requiring it to visually compare two images in its head.
+        # Diff vs previous screenshot for change-detection feedback.
         diff_summary: str | None = None
         if sandbox.last_screenshot is not None:
             try:
@@ -115,8 +109,17 @@ class ScreenshotTool(Tool):
             except Exception:
                 pass  # diff is best-effort; never block the screenshot
 
-        # Update the stored baseline for the next comparison.
         sandbox.last_screenshot = png_bytes
+
+        # Compute and store the image→logical-pixel scale so the mouse tool can
+        # convert coordinates without requiring image_width/image_height to be
+        # re-supplied on every call.
+        try:
+            from openvibe.computer.input import screen_size as _ss
+            _lw, _lh = _ss()
+            sandbox.coord_scale = (_lw / width, _lh / height)
+        except Exception:
+            sandbox.coord_scale = (1.0, 1.0)
 
         await sandbox.record_action(
             ActionType.SCREENSHOT,
@@ -124,7 +127,6 @@ class ScreenshotTool(Tool):
             result=f"{width}x{height}" + (f" | {diff_summary}" if diff_summary else ""),
         )
 
-        # Save to disk if a path was requested.
         saved_path: str | None = None
         if params.save_path:
             try:
@@ -147,21 +149,33 @@ class ScreenshotTool(Tool):
         region_desc = f" (region {params.region})" if params.region else ""
         save_desc = f" → saved to {saved_path}" if saved_path else ""
 
-        # Include logical screen size so the mouse tool can scale correctly.
-        logical_note = ""
+        sx, sy = sandbox.coord_scale
+        scale_note = (
+            f" (coordinate scale {sx:.3f}×{sy:.3f} to screen)"
+            if abs(sx - 1.0) > 0.02 or abs(sy - 1.0) > 0.02
+            else ""
+        )
+
+        cursor_note = ""
         try:
-            from openvibe.computer.input import screen_size
-            lw, lh = screen_size()
-            logical_note = f" (logical screen: {lw}×{lh})"
+            from openvibe.computer.input import get_mouse_position
+            loop = asyncio.get_event_loop()
+            cx, cy = await loop.run_in_executor(None, get_mouse_position)
+            # Convert logical cursor position to image-space for the LLM
+            inv_sx = 1.0 / sandbox.coord_scale[0] if sandbox.coord_scale[0] else 1.0
+            inv_sy = 1.0 / sandbox.coord_scale[1] if sandbox.coord_scale[1] else 1.0
+            img_cx = round(cx * inv_sx)
+            img_cy = round(cy * inv_sy)
+            cursor_note = f" | Cursor at ({img_cx},{img_cy}) in image coords"
         except Exception:
             pass
 
         output_lines = [
-            f"Captured {width}×{height} screenshot{region_desc}{save_desc}.{logical_note}",
-            f"Mouse coordinates: pass image_width={width}, image_height={height} to the mouse tool for correct Retina scaling.",
+            f"Captured {width}×{height} screenshot{region_desc}{save_desc}{scale_note}{cursor_note}.",
+            "Use the pixel coordinates you see in this image directly with the mouse tool — scaling is automatic.",
         ]
         if diff_summary:
-            output_lines.append(f"Change detection vs previous screenshot: {diff_summary}")
+            output_lines.append(f"Change detection: {diff_summary}")
 
         return ToolResult(
             title=f"Screenshot {width}×{height}{region_desc}",

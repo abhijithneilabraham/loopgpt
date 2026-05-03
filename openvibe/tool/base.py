@@ -1,48 +1,4 @@
-"""Tool base class and registry.
-
-Every built-in and third-party tool must subclass ``Tool`` and implement
-``execute()``.  Tools are discovered and registered via ``ToolRegistry``.
-
-Built-in tools are registered automatically when the registry is created.
-Custom / third-party tools can be added at any time via ``registry.register()``.
-
-Implementing a custom tool
---------------------------
-Subclass ``Tool`` and set the class-level ``name`` and ``description``
-attributes. Define an inner ``Params`` model (a ``pydantic.BaseModel``)
-that declares the tool's parameters — these are automatically converted
-to a JSON Schema and sent to the LLM::
-
-    from pydantic import BaseModel, Field
-    from openvibe.tool.base import Tool, ToolContext, ToolResult
-
-    class MyTool(Tool):
-        name = "my_tool"
-        description = "Does something useful."
-
-        class Params(BaseModel):
-            message: str = Field(description="The message to process.")
-
-        async def execute(self, ctx: ToolContext, params: "MyTool.Params") -> ToolResult:
-            result = do_something(params.message)
-            return ToolResult(title=f"Processed: {params.message}", output=result)
-
-The ``Params`` class must be a ``BaseModel`` with all fields annotated.
-Register your tool::
-
-    registry.register(MyTool())
-
-Tool output is automatically truncated to ``MAX_OUTPUT_CHARS`` unless
-``metadata["truncated"] = True`` is set explicitly in the result.
-
-TODO: Plugin hook — external packages can expose tools via the
-``openvibe.tools`` entry-point group::
-
-    [project.entry-points."openvibe.tools"]
-    my_tool = "my_package.tools:MyTool"
-
-The registry will automatically load these on startup in a future release.
-"""
+"""Tool base class, registry, and built-in tool loader."""
 
 from __future__ import annotations
 
@@ -79,6 +35,7 @@ class ToolContext:
     call_id: str = ""
     # Permission service is injected so tools can call ctx.check_permission()
     _permissions: "PermissionService | None" = field(default=None, repr=False)
+    _rules: list = field(default_factory=list, repr=False)
     _messages: list["Message"] = field(default_factory=list, repr=False)
 
     async def check_permission(
@@ -89,6 +46,7 @@ class ToolContext:
             await self._permissions.check(
                 tool=tool,
                 argument=argument,
+                rules=self._rules or None,
                 project_id=self.project_id,
                 session_id=self.session_id,
                 description=description,
@@ -113,6 +71,12 @@ class ToolResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     attachments: list[Attachment] = field(default_factory=list)
     error: bool = False
+    # When set, the session processor injects this as a new USER message after
+    # storing the tool result, causing the LLM to respond to it as a fresh task.
+    follow_up_message: str = ""
+    # When set alongside follow_up_message, the processor switches to this agent
+    # for the follow-up turn (e.g. "computer" for learn/replay tasks).
+    follow_up_agent: str = ""
 
     def __post_init__(self) -> None:
         # Auto-truncate unless explicitly marked otherwise
@@ -127,12 +91,7 @@ class ToolResult:
 
 
 class Tool(abc.ABC):
-    """Abstract base class for all openvibe tools.
-
-    Subclasses must set ``name`` and ``description`` as class attributes and
-    implement the ``execute`` coroutine.  The inner ``Params`` class (a
-    ``pydantic.BaseModel``) defines the tool's parameter schema.
-    """
+    """Base class for all openvibe tools. Subclasses set name/description and implement execute()."""
 
     name: str  # must be set by subclass
     description: str  # must be set by subclass
@@ -207,12 +166,7 @@ class ToolRegistry:
 
 
 def create_default_registry() -> ToolRegistry:
-    """Create a registry pre-loaded with all built-in tools, including computer-use.
-
-    Computer-use tools (screenshot, mouse, keyboard, app, ui) are always
-    registered so users can interact with the desktop without switching agents.
-    Their dependencies are auto-installed on first use via openvibe.computer.deps.
-    """
+    """Return a registry pre-loaded with all built-in tools."""
     from openvibe.tool.bash import BashTool
     from openvibe.tool.edit import EditTool
     from openvibe.tool.glob_tool import GlobTool
@@ -231,7 +185,6 @@ def create_default_registry() -> ToolRegistry:
     from openvibe.tool.computer_ui import UITool
     from openvibe.tool.computer_watch import WatchScreenTool
     from openvibe.tool.computer_learn import LearnTool
-    from openvibe.tool.sim_tool import SimTool
 
     registry = ToolRegistry()
     for tool in [
@@ -254,7 +207,6 @@ def create_default_registry() -> ToolRegistry:
         AppTool(),
         WatchScreenTool(),
         LearnTool(),
-        SimTool(),
     ]:
         registry.register(tool)
     return registry

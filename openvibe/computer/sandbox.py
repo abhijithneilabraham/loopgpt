@@ -1,17 +1,4 @@
-"""Session-scoped computer-use sandbox.
-
-The sandbox tracks every action taken against the screen, enforces an
-optional application allow-list, and maintains a full audit log that can
-be exported for reproducibility / compliance purposes.
-
-Usage::
-
-    from openvibe.computer.sandbox import get_sandbox, ActionType
-
-    sandbox = get_sandbox(session_id)
-    await sandbox.record_action(ActionType.SCREENSHOT, params={}, result="ok")
-    log = sandbox.export_audit_log()
-"""
+"""Per-session sandbox: gates computer-use actions and keeps an audit log."""
 
 from __future__ import annotations
 
@@ -81,21 +68,7 @@ class AuditEntry:
 
 @dataclass
 class ComputerSandbox:
-    """Per-session sandbox that gates and records computer-use actions.
-
-    Attributes
-    ----------
-    session_id:
-        Owning session — used to correlate audit entries.
-    allowed_apps:
-        If non-empty, only these application names may be opened/focused.
-        Comparisons are case-insensitive substring matches.
-    screen_region:
-        Optional ``(x, y, width, height)`` bounding box.  When set,
-        screenshot and click coordinates are validated to stay inside.
-    audit_log:
-        Ordered list of every action taken this session.
-    """
+    """Per-session sandbox that gates and records computer-use actions."""
 
     session_id: str
     allowed_apps: list[str] = field(default_factory=list)
@@ -104,6 +77,9 @@ class ComputerSandbox:
     audit_log: list[AuditEntry] = field(default_factory=list)
     # Last captured screenshot PNG bytes — used for automatic change detection.
     last_screenshot: bytes | None = field(default=None, repr=False)
+    # Coordinate scale set at screenshot time: multiply image-space coords by
+    # these to get logical (pynput) screen coords.  Updated on every screenshot.
+    coord_scale: tuple[float, float] = field(default_factory=lambda: (1.0, 1.0))
     # Tools pre-approved by pre_flight — skips per-call permission prompts.
     pre_approved_tools: set[str] = field(default_factory=set)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)

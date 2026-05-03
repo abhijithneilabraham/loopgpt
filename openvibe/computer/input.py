@@ -181,6 +181,14 @@ def _smooth_move(
             time.sleep(duration / steps)
 
 
+def get_mouse_position() -> tuple[int, int]:
+    """Return the current cursor position in logical screen coordinates."""
+    mouse = _pynput_mouse()
+    m = mouse.Controller()
+    pos = m.position
+    return (int(pos[0]), int(pos[1]))
+
+
 def mouse_move(x: int, y: int, duration: float = 0.25, settle_ms: int = 200) -> str:
     """Move the mouse pointer to (x, y)."""
     check_accessibility()

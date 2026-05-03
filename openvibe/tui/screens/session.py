@@ -16,21 +16,41 @@ from textual.widgets import Static
 
 
 def _copy_to_clipboard(text: str) -> bool:
-    """Copy *text* to the system clipboard.  Returns True on success."""
+    """Copy *text* to the system clipboard.  Returns True on success.
+
+    Tries OSC 52 first (terminal-native, works in any modern terminal on any
+    OS without external tools), then falls back to subprocess clipboard helpers.
+    """
+    import base64
+
+    # OSC 52 — write directly to the terminal device so Textual's buffering
+    # doesn't swallow it.  Supported by iTerm2, kitty, WezTerm, Alacritty,
+    # foot, tmux (with set-clipboard on), Windows Terminal, and others.
     with contextlib.suppress(Exception):
-        if sys.platform == "darwin":
-            subprocess.run(["pbcopy"], input=text.encode(), check=True, timeout=2)
+        encoded = base64.b64encode(text.encode()).decode()
+        seq = f"\033]52;c;{encoded}\a"
+        try:
+            with open("/dev/tty", "w") as tty:
+                tty.write(seq)
+                tty.flush()
+        except OSError:
+            # /dev/tty unavailable (Windows, some CI envs) — write to stdout
+            sys.stdout.write(seq)
+            sys.stdout.flush()
+        return True
+
+    # Fallback: OS clipboard tools
+    for cmd in (
+        ["pbcopy"],
+        ["xclip", "-selection", "clipboard"],
+        ["xsel", "--clipboard", "--input"],
+        ["wl-copy"],
+    ):
+        try:
+            subprocess.run(cmd, input=text.encode(), check=True, timeout=2)
             return True
-        for cmd in (
-            ["xclip", "-selection", "clipboard"],
-            ["xsel", "--clipboard", "--input"],
-            ["wl-copy"],
-        ):
-            try:
-                subprocess.run(cmd, input=text.encode(), check=True, timeout=2)
-                return True
-            except (FileNotFoundError, subprocess.SubprocessError):
-                continue
+        except (FileNotFoundError, subprocess.SubprocessError):
+            continue
     return False
 
 from openvibe.api import SessionState
@@ -46,12 +66,14 @@ class SessionScreen(Screen):
     DEFAULT_CSS = """
     SessionScreen {
         layout: vertical;
+        background: #111111;
     }
     #header {
         height: 1;
-        background: #000000;
-        color: $text-muted;
+        background: #1a1a1a;
+        color: #666666;
         padding: 0 2;
+        border-bottom: solid #222222;
     }
     """
 
@@ -223,13 +245,15 @@ class SessionScreen(Screen):
 
     def _refresh_header(self, *, streaming: bool = False, token_count: int = 0) -> None:
         title = self._session_title or self._session_id[:12]
+        session = self.app.get_session(self._session_id)  # type: ignore[attr-defined]
+        auto_tag = "  [#cc8800]⚡ auto[/#cc8800]" if getattr(session, "auto_accept", False) else ""
         if streaming:
-            tok = f" ({self._fmt_tokens(token_count)} tokens)" if token_count else ""
-            suffix = f"  [dim]streaming…{tok}[/dim]"
+            tok = f" {self._fmt_tokens(token_count)}" if token_count else ""
+            suffix = f"  [#cc9900]◎[/#cc9900] [#555555]streaming…{tok}[/#555555]"
         else:
             suffix = ""
         self.query_one("#header", Static).update(
-            f"[bold]openvibe[/bold]  [dim]{title}[/dim]{suffix}"
+            f"[#4a9f5a bold]openvibe[/#4a9f5a bold]  [#555555]{title}[/#555555]{auto_tag}{suffix}"
         )
 
     # ------------------------------------------------------------------
@@ -247,6 +271,11 @@ class SessionScreen(Screen):
         # Skill invocations (/skillname args) look like commands but go to
         # the LLM; route them through _start_turn instead.
         from openvibe.commands import _COMMANDS, is_command  # noqa: PLC2701
+
+        # Vim-style :q / :q! and explicit /quit → exit immediately.
+        if event.text.strip() in (":q", ":q!"):
+            self.app.exit()
+            return
 
         if is_command(event.text):
             parts = event.text[1:].split(None, 1)
@@ -313,6 +342,7 @@ class SessionScreen(Screen):
             return
 
         # Persist and display the result as an assistant message.
+        countdown_widget = None
         if result.output:
             reply_msg = session_store.add_message(
                 db,
@@ -325,6 +355,40 @@ class SessionScreen(Screen):
                 str(MessageRole.ASSISTANT),
             )
             result_widget.set_markup(result.output)
+            countdown_widget = result_widget
+
+        # Countdown: show 3…2…1 live, then call deferred_action.
+        if result.countdown_seconds > 0:
+            import asyncio as _asyncio
+            if countdown_widget is None:
+                cd_msg = session_store.add_message(
+                    db, self._session_id, MessageRole.ASSISTANT, [TextPart(content="")]
+                )
+                countdown_widget = await msg_list.add_message(cd_msg.id, str(MessageRole.ASSISTANT))
+            for i in range(result.countdown_seconds, 0, -1):
+                countdown_widget.set_markup(
+                    f"{result.output}\n[bold yellow]{i}[/bold yellow]"
+                    if result.output else f"[bold yellow]{i}[/bold yellow]"
+                )
+                await _asyncio.sleep(1)
+            countdown_widget.set_markup(
+                (result.output + "\n" if result.output else "") +
+                "[green]● Recording started[/green]"
+            )
+            if result.deferred_action:
+                result.deferred_action()
+
+        # If the command wants to kick off an agent turn, do it now.
+        if result.forward_to_session:
+            if result.forward_to_agent:
+                session = self.app.get_session(self._session_id)  # type: ignore[attr-defined]
+                session._agent_name = result.forward_to_agent
+            input_bar = self.query_one(InputBar)
+            input_bar.freeze()
+            self._stream_token_count = 0
+            self._refresh_header(streaming=True)
+            # Use clean_context so prior session history doesn't contaminate the turn.
+            self._start_turn(result.forward_to_session, clean_context=bool(result.forward_to_agent))
 
     # ------------------------------------------------------------------
     # Permission handling
@@ -439,7 +503,7 @@ class SessionScreen(Screen):
             self.app.call_from_thread(self.post_message, events.StreamError(error_msg))
 
     @work(thread=True)
-    def _start_turn(self, text: str) -> None:
+    def _start_turn(self, text: str, clean_context: bool = False) -> None:
         """Start a new agent turn with *text* as the user message."""
         session = self.app.get_session(self._session_id)  # type: ignore[attr-defined]
         on_message, on_token, on_tool = self._make_callbacks(text)
@@ -449,6 +513,7 @@ class SessionScreen(Screen):
                 on_token=on_token,
                 on_message=on_message,
                 on_tool=on_tool,
+                clean_context=clean_context,
             )
             self._dispatch_response(response)
         except Exception as exc:  # noqa: BLE001
@@ -524,7 +589,8 @@ class SessionScreen(Screen):
                     target_widget = perm_widget
                 self._perm_tool_target = None
             await target_widget.add_tool(event.part_index, event.state)
-            msg_list.scroll_end(animate=False)
+            if msg_list._at_bottom():
+                msg_list.scroll_end(animate=False)
 
     @on(events.TurnCompleted)
     def handle_turn_completed(self, _event: events.TurnCompleted) -> None:

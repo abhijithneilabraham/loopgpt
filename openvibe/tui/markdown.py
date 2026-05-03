@@ -173,16 +173,22 @@ def render_markdown(text: str) -> list[Segment]:
     raw = _md(text)
     raw = _TRAILING_NL.sub("", raw)
 
+    def _safe_from_markup(s: str) -> Text:
+        try:
+            return Text.from_markup(s)
+        except Exception:
+            return Text.from_markup(escape(s))
+
     segments: list[Segment] = []
     pos = 0
     for m in _CODE_RE.finditer(raw):
         before = raw[pos : m.start()]
         if before:
-            segments.append(("text", Text.from_markup(before)))
+            segments.append(("text", _safe_from_markup(before)))
         segments.append(("code", Text.from_ansi(m.group(1))))
         pos = m.end()
     tail = raw[pos:]
     if tail:
-        segments.append(("text", Text.from_markup(tail)))
+        segments.append(("text", _safe_from_markup(tail)))
 
     return segments

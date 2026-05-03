@@ -344,7 +344,7 @@ def resolve_model() -> str:
     config = load_config()
     if config.model:
         return f"{config.model.provider_id}/{config.model.model_id}"
-    return "azure/gpt-4.1"
+    return "azure/gpt-5.1"
 
 
 def count_tokens(model: str, text: str) -> int:

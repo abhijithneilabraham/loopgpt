@@ -1,14 +1,4 @@
-"""MouseTool — control the mouse pointer via pynput.
-
-pynput provides reliable, cross-platform mouse control with native OS APIs:
-  macOS  — Quartz Event Services
-  Linux  — Xlib (X11) or evdev (Wayland)
-  Windows — SendInput (Win32)
-
-Supports click, double-click, right-click, middle-click, move, scroll, and drag.
-Coordinates are auto-scaled from image pixels to logical screen pixels so that
-Retina / HiDPI displays work correctly when coordinates come from a screenshot.
-"""
+"""MouseTool — cross-platform mouse control via pynput with auto Retina scaling."""
 
 from __future__ import annotations
 
@@ -26,9 +16,8 @@ class MouseTool(Tool):
     name = "mouse"
     description = (
         "Control the mouse: move, click (left/right/middle), double-click, "
-        "scroll, or drag. Coordinates are in screenshot image pixels — always "
-        "provide image_width and image_height so Retina/HiDPI scaling is handled "
-        "automatically."
+        "scroll, or drag. Use pixel coordinates directly from the last screenshot — "
+        "scaling is applied automatically."
     )
 
     class Params(Tool.Params):
@@ -60,14 +49,13 @@ class MouseTool(Tool):
         image_width: int | None = Field(
             default=None,
             description=(
-                "Width of the screenshot image the coordinates were taken from. "
-                "ALWAYS provide this — it enables automatic Retina/HiDPI scaling. "
-                "Use the width reported by the screenshot tool."
+                "Optional: width of the screenshot image the coordinates were taken from. "
+                "Leave unset — scaling is applied automatically from the last screenshot."
             ),
         )
         image_height: int | None = Field(
             default=None,
-            description="Height of the screenshot image. Provide alongside image_width.",
+            description="Optional: height of the screenshot image. Leave unset.",
         )
         button: Literal["left", "right", "middle"] = Field(
             default="left",
@@ -91,33 +79,38 @@ class MouseTool(Tool):
 
     async def execute(self, ctx: ToolContext, params: "MouseTool.Params") -> ToolResult:
         from openvibe.computer.sandbox import ActionType, get_sandbox
-        from openvibe.computer.input import screen_size
         from openvibe.computer.observer import get_observer
 
-        # ── Retina / HiDPI coordinate scaling ─────────────────────────────
+        sandbox = get_sandbox(ctx.session_id)
+
+        # ── Coordinate scaling ────────────────────────────────────────────
+        # Priority 1: use scale stored at screenshot time (sandbox.coord_scale).
+        # Priority 2: compute from image_width/image_height + screen_size().
+        # This converts image-space coordinates → logical pynput coordinates.
         scaled = params
         scale_note = ""
-        if params.image_width and params.image_height:
-            try:
+        try:
+            sx, sy = sandbox.coord_scale
+            # If caller explicitly provided image dims, recompute from them.
+            if params.image_width and params.image_height:
+                from openvibe.computer.input import screen_size
                 sw, sh = await asyncio.get_event_loop().run_in_executor(None, screen_size)
                 sx = sw / params.image_width
                 sy = sh / params.image_height
-                if abs(sx - 1.0) > 0.02 or abs(sy - 1.0) > 0.02:
-                    scaled = params.model_copy(update={
-                        "x": round(params.x * sx),
-                        "y": round(params.y * sy),
-                        "end_x": round(params.end_x * sx) if params.end_x is not None else None,
-                        "end_y": round(params.end_y * sy) if params.end_y is not None else None,
-                    })
-                    scale_note = (
-                        f" [scaled ({params.x},{params.y})→({scaled.x},{scaled.y})"
-                        f" @ {sx:.3f}×{sy:.3f}]"
-                    )
-            except Exception:
-                pass
+            if abs(sx - 1.0) > 0.02 or abs(sy - 1.0) > 0.02:
+                scaled = params.model_copy(update={
+                    "x": round(params.x * sx),
+                    "y": round(params.y * sy),
+                    "end_x": round(params.end_x * sx) if params.end_x is not None else None,
+                    "end_y": round(params.end_y * sy) if params.end_y is not None else None,
+                })
+                scale_note = (
+                    f" [scaled ({params.x},{params.y})→({scaled.x},{scaled.y})"
+                    f" @ {sx:.3f}×{sy:.3f}]"
+                )
+        except Exception:
+            pass
         # ──────────────────────────────────────────────────────────────────
-
-        sandbox = get_sandbox(ctx.session_id)
         if not sandbox.is_pre_approved("mouse"):
             await ctx.check_permission(
                 tool="mouse",

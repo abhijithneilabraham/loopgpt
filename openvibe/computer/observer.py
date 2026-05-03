@@ -1,22 +1,4 @@
-"""Live screen observer — background thread monitoring screen changes.
-
-Captures frames at ~5 fps, diffs consecutive frames, tracks focus shifts,
-and maintains a rolling event buffer that the agent can read at any time.
-
-Usage::
-
-    from openvibe.computer.observer import get_observer
-
-    obs = get_observer(session_id)
-    obs.start()                         # start background monitoring
-    # ... agent performs actions ...
-    print(obs.get_summary())            # compact text injected into LLM context
-    ctx = obs.record_action("click")    # call immediately after each action
-    obs.stop()
-
-The observer is intentionally lightweight — it avoids heavy frame storage
-and only records events when something meaningfully changed.
-"""
+"""Background thread that captures frames at ~5 fps, diffs them, and logs screen/focus events."""
 
 from __future__ import annotations
 
@@ -50,28 +32,7 @@ class ScreenEvent:
 
 
 class ScreenObserver:
-    """Per-session background monitor.
-
-    Runs a daemon thread that captures frames at *fps*, diffs them, and logs
-    :class:`ScreenEvent` entries when something changes.  Focus is polled
-    every *focus_poll_interval* seconds (more expensive than frame capture).
-
-    Parameters
-    ----------
-    session_id:
-        Owning session — used for thread naming and the global registry.
-    fps:
-        Target capture rate.  5 fps is sufficient for detecting UI reactions.
-        Values above ~10 are rarely achievable on most hardware.
-    max_events:
-        Rolling buffer depth.  Older events are silently dropped.
-    change_threshold:
-        Fraction of pixels that must change for an event to be recorded.
-        0.005 = 0.5% — filters cursor blinks and sub-pixel antialiasing.
-    focus_poll_interval:
-        Seconds between focus queries.  osascript/xdotool calls are ~50–150 ms
-        so polling too frequently degrades capture FPS.
-    """
+    """Per-session background monitor: captures frames, diffs them, logs ScreenEvents."""
 
     def __init__(
         self,
@@ -130,11 +91,7 @@ class ScreenObserver:
         return events[-n:]
 
     def get_summary(self, n: int = 8) -> str:
-        """Compact multi-line text describing recent screen activity.
-
-        Intended to be injected into the LLM's context when the agent
-        calls the watch_screen tool.
-        """
+        """Compact text of recent screen activity for LLM context."""
         events = self.get_recent_events(n)
         if not events:
             return "Screen observer: no activity recorded yet."
@@ -149,18 +106,7 @@ class ScreenObserver:
         return "\n".join(lines)
 
     def record_action(self, action_desc: str) -> str:
-        """Capture screen + focus immediately after an action and return a
-        one-line feedback string for inclusion in the tool's ToolResult.
-
-        This is the primary way tools signal the observer that something
-        happened.  It captures a diff from the last known frame so the
-        agent knows whether the action had the expected visual effect.
-
-        Returns a formatted feedback string, e.g.::
-
-            "Focus: App: Chrome | Window: Gmail | Element: AXTextField (To:)\\n"
-            "Screen: 4.3% changed in top-right area"
-        """
+        """Capture screen + focus after an action; return a feedback string for ToolResult."""
         try:
             from openvibe.computer.focus import get_focus_context
             from openvibe.computer.capture import capture_screen, diff_screenshots
@@ -277,7 +223,7 @@ class ScreenObserver:
             time.sleep(self._interval)
 
     def _poll_focus(self, now: float, get_focus_context) -> str:
-        """Return cached focus string, refreshing every focus_poll_interval seconds."""
+        """Return cached focus, refreshing every focus_poll_interval seconds."""
         if now - self._last_focus_ts >= self._focus_poll_interval:
             try:
                 self._last_focus = get_focus_context()

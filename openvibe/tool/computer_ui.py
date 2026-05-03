@@ -1,32 +1,8 @@
-"""UITool — accessibility-tree based UI interaction, cross-platform.
+"""UITool — accessibility-tree UI interaction (no pixel coords needed).
 
-Clicks buttons, types text, navigates menus, and reads element values through
-each platform's native accessibility API.  No pixel coordinates needed.
-
-Platform backends
------------------
-macOS   — atomacos (Python bindings to macOS Accessibility API via pyobjc)
-           pip install atomacos
-           Falls back to AppleScript if atomacos is not installed.
-Linux   — AT-SPI2 via pyatspi
-           pip install pyatspi  (or: sudo apt install python3-pyatspi)
-           xdotool fallback for type/press when pyatspi is absent.
-Windows — UI Automation via pywinauto
-           pip install pywinauto
-
-Why accessibility-based over coordinate-based
----------------------------------------------
-* No Retina / HiDPI coordinate translation.
-* Works at any window position or screen resolution.
-* Errors are descriptive: "button 'Save' not found" vs a silent mis-click.
-* Reliable after window moves / resizes.
-
-Graceful degradation
---------------------
-If the preferred library is missing, the tool falls back to the next best
-approach and surfaces a clear install hint in error messages.
-For apps with no accessibility tree (Electron games, custom renderers) use
-the screenshot + mouse tools instead.
+macOS: atomacos → AppleScript fallback.
+Linux: pyatspi → xdotool fallback.
+Windows: pywinauto.
 """
 
 from __future__ import annotations
@@ -182,15 +158,7 @@ class UITool(Tool):
         )
 
 
-# ===========================================================================
-# macOS backend — atomacos (Python bindings to AXUIElement API)
-# ===========================================================================
-# atomacos wraps pyobjc-framework-ApplicationServices to provide a clean
-# Python API over macOS's built-in Accessibility framework.
-# install: pip install atomacos
-#
-# If atomacos is not installed we fall back to AppleScript via osascript.
-# ===========================================================================
+# macOS backend — atomacos → AppleScript fallback
 
 
 def _try_atomacos():
@@ -213,17 +181,15 @@ def _macos_dispatch(params: "UITool.Params") -> str:
 
 
 def _ax_find_app(ax, name: str):
-    """Return the atomacos app ref for *name*, raising RuntimeError on failure."""
+    """Return atomacos app ref for name, or raise RuntimeError."""
     errors: list[str] = []
 
-    # 1. Localized name (most reliable — matches Activity Monitor)
     try:
         return ax.getAppRefByLocalizedName(name)
     except Exception as e:
         errors.append(f"localized name: {e}")
 
-    # 2. Bundle ID (e.g. "com.apple.TextEdit")
-    try:
+    try:  # bundle ID
         return ax.getAppRefByBundleId(name)
     except Exception as e:
         errors.append(f"bundle id: {e}")
@@ -236,7 +202,7 @@ def _ax_find_app(ax, name: str):
     )
 
 
-def _ax_walk(elem: Any, max_depth: int = 8):
+def _ax_walk(elem: Any, max_depth: int = 12):
     """Yield all AX elements depth-first up to *max_depth*."""
     yield elem, 0
 
@@ -256,7 +222,7 @@ def _ax_walk(elem: Any, max_depth: int = 8):
 
 def _ax_get_label(elem: Any) -> str:
     """Return the best human-readable label for an AX element."""
-    for attr in ("AXTitle", "AXValue", "AXDescription", "AXHelp"):
+    for attr in ("AXTitle", "AXDescription", "AXPlaceholderValue", "AXValue", "AXHelp"):
         try:
             val = getattr(elem, attr, None)
             if val and isinstance(val, str):
@@ -331,8 +297,8 @@ def _ax_get_tree(ax: Any, app_name: str, window_index: int = 1) -> str:
     win_title = _ax_get_label(win) or "(untitled)"
     lines = [f"Window {window_index}: {win_title!r}"]
     seen = 0
-    for elem, depth in _ax_walk(win, max_depth=6):
-        if seen >= 120:
+    for elem, depth in _ax_walk(win, max_depth=10):
+        if seen >= 300:
             lines.append("  … (truncated — use a more specific app/window)")
             break
         role = _ax_get_role(elem)
@@ -363,12 +329,40 @@ def _ax_click(
             f"Element title='{title}' role='{role}' not found in '{app_name}'. "
             "Run get_tree to see available elements."
         )
+    elem_label = _ax_get_label(elem) or title or role or "element"
+    elem_role = _ax_get_role(elem)
+
+    # Try AXPress first (works for native buttons, checkboxes, etc.)
+    pressed = False
+    press_exc = None
     try:
         elem.Press()
-        elem_label = _ax_get_label(elem) or title or role or "element"
-        return f"Clicked [{_ax_get_role(elem)}] '{elem_label}' in {app_name}."
+        pressed = True
     except Exception as exc:
-        raise RuntimeError(f"Could not click element: {exc}") from exc
+        press_exc = exc
+
+    if pressed:
+        return f"Clicked [{elem_role}] '{elem_label}' in {app_name}."
+
+    # Fallback: click at the element's center coordinates.
+    # This works for browser text fields, web inputs, and any element where
+    # AXPress is not implemented (web content exposed via accessibility).
+    try:
+        pos = elem.AXPosition   # CGPoint (x, y) in screen logical coords
+        sz = elem.AXSize        # CGSize (width, height)
+        cx = int(pos.x + sz.width / 2)
+        cy = int(pos.y + sz.height / 2)
+        from openvibe.computer.input import mouse_click
+        mouse_click(cx, cy, "left", 1, 0.1, 300)
+        return (
+            f"Clicked [{elem_role}] '{elem_label}' in {app_name} "
+            f"at ({cx},{cy}) via coordinates."
+        )
+    except Exception as coord_exc:
+        raise RuntimeError(
+            f"Could not click element '{elem_label}': "
+            f"Press failed ({press_exc}); coordinate fallback failed ({coord_exc})"
+        ) from coord_exc
 
 
 def _ax_click_menu(
@@ -443,7 +437,7 @@ def _ax_get_value(
     elem = _ax_find_elem(win, title, role)
     if elem is None:
         raise RuntimeError(f"Element title='{title}' role='{role}' not found.")
-    # Try AXValue first (text fields), then AXTitle (buttons), then description
+    # AXValue (text fields) → AXTitle (buttons) → AXDescription
     for attr in ("AXValue", "AXTitle", "AXDescription"):
         try:
             val = getattr(elem, attr, None)
@@ -650,9 +644,7 @@ end tell
     return _osascript(script)
 
 
-# ===========================================================================
-# Linux backend — AT-SPI2 via pyatspi, xdotool fallback
-# ===========================================================================
+# Linux backend — pyatspi → xdotool fallback
 
 
 def _linux_dispatch(params: "UITool.Params") -> str:
@@ -663,7 +655,6 @@ def _linux_dispatch(params: "UITool.Params") -> str:
         return _xdotool_dispatch(params)
 
 
-# ---- AT-SPI (pyatspi) -------------------------------------------------------
 
 
 def _atspi_find_app(name: str):
@@ -830,7 +821,6 @@ def _atspi_get_value(app_name: str, title: str | None, role: str | None) -> str:
     return node.name or "(no value)"
 
 
-# ---- xdotool fallback (when pyatspi not installed) --------------------------
 
 
 def _has_xdotool() -> bool:
@@ -904,9 +894,7 @@ def _linux_press_key(app_name: str, key: str | None, modifiers: list[str]) -> st
     return f"Pressed {display} in {app_name}."
 
 
-# ===========================================================================
-# Windows backend — pywinauto (UI Automation)
-# ===========================================================================
+# Windows backend — pywinauto
 
 
 _WIN_ROLE_MAP = {

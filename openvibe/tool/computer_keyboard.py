@@ -1,18 +1,4 @@
-"""KeyboardTool — type text and press key combinations via pynput.
-
-pynput drives native OS input APIs:
-  macOS  — Quartz Event Services
-  Linux  — Xlib (X11) or evdev (Wayland)
-  Windows — SendInput (Win32)
-
-Text is always typed via clipboard paste (pbcopy/xclip/pyperclip + paste hotkey)
-so that full Unicode — including CJK, emoji, RTL scripts — works on every platform.
-
-Key names follow a readable convention (case-insensitive):
-    enter, escape, tab, space, backspace, delete,
-    up, down, left, right, home, end, pageup, pagedown,
-    f1–f12, ctrl, shift, alt, cmd, and any single character.
-"""
+"""KeyboardTool — type text and press keys via pynput (Unicode-safe, cross-platform)."""
 
 from __future__ import annotations
 

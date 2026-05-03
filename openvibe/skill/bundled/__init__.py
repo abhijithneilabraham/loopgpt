@@ -12,8 +12,6 @@ def init_bundled_skills() -> None:
     :meth:`~openvibe.api.OpenVibe.start_async`.
     """
     from openvibe.skill.bundled.build_and_eval import BuildAndEvalSkill
-    from openvibe.skill.bundled.simulate import SimulateSkill
 
     registry = get_registry()
-    registry.register(SimulateSkill())
     registry.register(BuildAndEvalSkill())

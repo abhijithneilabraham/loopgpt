@@ -98,26 +98,16 @@ Do **not** proceed to Phase 2 until Phase 1 is fully complete and verified.
 ## Phase 2 — Evaluate
 
 5. Read `{task_file}` (the original task) and `SOLUTION.md` (what was built).
-6. Call the `simulate` tool with:
-   - `context` = the full text of `{task_file}` followed by the full text of `SOLUTION.md`
-   - `n_scenarios` = 5
-   - `mode` = "full"
-   - `output_path` = "{output_path}"
-   - `working_dir` = "{task_dir}"
-
-   The simulation harness will automatically:
-   - Design a complete evaluation environment (personas, tools, criteria) suited to what was built
-   - Generate shell commands to execute the real artifact during simulation
-   - Run each scenario by actually invoking the built artifact and scoring the real outputs
-   - Save a full report to `{output_path}/`
+6. Write a concise evaluation to `{output_path}/evaluation.md`:
+   - Does the solution meet the requirements in `{task_file}`?
+   - What works well?
+   - What is missing or could be improved?
+   - Overall assessment (pass/fail with reasoning)
 
 7. Present the evaluation summary:
-   - Overall score and pass rate
-   - Breakdown by difficulty and criterion
+   - Pass or fail, with reasoning
+   - What worked well
    - The weakest area and one concrete improvement suggestion
-
-The harness evaluates your **actual output**. It designs its own evaluation criteria
-from what you built — you do not need to specify them.
 
 ## Phase 3 — Improve (optional)
 
@@ -126,12 +116,8 @@ from what you built — you do not need to specify them.
    "Would you like me to use the evaluation results to improve the implementation?"
 
 9. If the user says yes:
-   - Read the evaluation report from `{output_path}/`
-   - Identify the failing scenarios and lowest-scoring criteria
-   - Make targeted improvements to the built artifact, guided by the feedback
-     and improvement suggestions in the report
+   - Read `{output_path}/evaluation.md`
+   - Make targeted improvements to the built artifact guided by the feedback
    - Update `SOLUTION.md` to reflect what changed
-   - Re-run the `simulate` tool with the same context and `output_path` to
-     produce an updated report showing the improvement
 
    If the user says no, stop here."""

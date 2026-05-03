@@ -91,6 +91,7 @@ class SessionProcessor:
         registry: ToolRegistry,
         permissions: "PermissionService",
         router: "ModelRouter | None" = None,
+        config: Any = None,
     ) -> None:
         self._db = db
         self._llm = llm
@@ -98,8 +99,7 @@ class SessionProcessor:
         self._registry = registry
         self._permissions = permissions
         self._router = router
-        # Sessions already asked about local-model routing this run.
-        self._routing_asked: set[str] = set()
+        self._config = config
 
     async def run(
         self,
@@ -108,6 +108,7 @@ class SessionProcessor:
         user_text: str,
         abort: asyncio.Event | None = None,
         user_message: MessageInfo | None = None,
+        clean_context: bool = False,
     ) -> MessageInfo:
         """Process one user turn; returns the completed assistant MessageInfo."""
         abort = abort or asyncio.Event()
@@ -129,10 +130,16 @@ class SessionProcessor:
             )
 
         # 2. Build LLM message history
-        history = session_store.list_messages(self._db, session.id)
+        # clean_context=True: use only the new user message (e.g. learn/replay),
+        # preventing prior unrelated tool history from contaminating the context.
+        if clean_context:
+            history = [user_msg]
+        else:
+            history = session_store.list_messages(self._db, session.id)
 
         # 3. Construct tools list for this agent
         tool_defs = _build_tool_definitions(self._registry, agent)
+        active_agent = agent
 
         # 4. Permission rules for this agent
         rules: list["Rule"] = list(agent.permission_rules)
@@ -140,11 +147,6 @@ class SessionProcessor:
         # 5a. Initialise the process blueprint for this session.
         #     The user's text becomes the session goal on the first turn.
         init_blueprint(session.id, user_text)
-
-        # 5b. On the first turn of a new session, check whether local models
-        #     are available and ask once for routing permission if needed.
-        if len(history) <= 1 and session.id not in self._routing_asked:
-            await self._maybe_ask_routing_permission(session)
 
         # 6. Classify task complexity once for this entire turn.
         #    All tool-call iterations reuse the same model — no re-classification.
@@ -171,7 +173,7 @@ class SessionProcessor:
 
             assistant_msg = await self._run_single_iteration(
                 session=session,
-                agent=agent,
+                agent=active_agent,
                 history=history,
                 tool_defs=tool_defs,
                 rules=rules,
@@ -179,6 +181,21 @@ class SessionProcessor:
                 abort=abort,
                 routing_plan=routing_plan,
             )
+
+            # Check if any tool requested an agent switch for the follow-up turn.
+            for part in assistant_msg.parts:
+                if isinstance(part, ToolPart):
+                    requested = part.state.metadata.get("follow_up_agent", "")
+                    if requested and requested != active_agent.name and self._config is not None:
+                        from openvibe.agent.agent import resolve as _resolve_agent
+                        try:
+                            new_agent = _resolve_agent(self._config, requested)
+                            active_agent = new_agent
+                            tool_defs = _build_tool_definitions(self._registry, active_agent)
+                            rules = list(active_agent.permission_rules)
+                        except Exception:
+                            pass  # fall back to original agent if resolution fails
+                        break
 
             # Check if we should continue
             last_part_has_tool = any(
@@ -456,6 +473,25 @@ class SessionProcessor:
                             result.error,
                         )
 
+                        # If the tool requested a follow-up agent switch, store it in
+                        # metadata so the outer run() loop can switch agents.
+                        if result.follow_up_agent:
+                            tool_part.state.metadata["follow_up_agent"] = result.follow_up_agent
+                            session_store.upsert_part(
+                                self._db, assistant_msg.id, part_idx, tool_part
+                            )
+
+                        # If the tool requested a follow-up user message (e.g. learn replay),
+                        # inject it now so the LLM receives it as a fresh task on the next iteration.
+                        if result.follow_up_message:
+                            from openvibe.session.models import TextPart
+                            session_store.add_message(
+                                self._db,
+                                session.id,
+                                MessageRole.USER,
+                                [TextPart(content=result.follow_up_message)],
+                            )
+
                         await self._bus.publish(
                             ToolStateChangedEvent(
                                 session_id=session.id,
@@ -667,6 +703,7 @@ class SessionProcessor:
             abort=abort,
             call_id=call_id,
             _permissions=self._permissions,
+            _rules=rules,
         )
         # Inject DB reference for tools that need it (todo, etc.)
         ctx._db = self._db  # type: ignore[attr-defined]
@@ -693,58 +730,11 @@ class SessionProcessor:
                 )
             return ToolResult(title=f"Error in {name}", output=str(exc), error=True)
         finally:
-            watcher.cancel()
+            try:
+                watcher.cancel()
+            except RuntimeError:
+                pass
 
-    async def _maybe_ask_routing_permission(self, session: SessionInfo) -> None:
-        """Ask the user once, at the start of a session, whether to use local
-        models for cheaper routing.
-
-        Only fires when:
-        - no model tiers are configured in the project/user config, AND
-        - ollama is available locally with matching models.
-
-        Uses the standard permission mechanism so the TUI shows the same
-        Allow / Deny prompt the user already knows.
-        """
-        from openvibe.config import PermissionAction
-        from openvibe.permission.permission import (PermissionDenied,
-                                                    PermissionRejected, Rule)
-        from openvibe.routing.discovery import run_discovery
-
-        self._routing_asked.add(session.id)
-
-        if self._router is None or self._router.enabled:
-            return  # tiers already configured — nothing to ask
-
-        try:
-            suggestions = run_discovery()
-        except Exception:
-            return
-
-        if not suggestions:
-            return  # ollama not available or no matching models
-
-        model_names = ", ".join(r.model_id for r in suggestions.values())
-        tier_desc = " · ".join(
-            f"{tier}: {ref.model_id}" for tier, ref in suggestions.items()
-        )
-
-        try:
-            await self._permissions.check(
-                tool="local_models",
-                argument=model_names,
-                description=(
-                    f"Use local Ollama models for cheaper tasks this session "
-                    f"({tier_desc}). Simple prompts → fast model, "
-                    f"complex prompts → your primary model."
-                ),
-                session_id=session.id,
-                rules=[Rule(tool="local_models", action=PermissionAction.ASK)],
-            )
-            # User approved — apply for this session only (not persisted).
-            self._router.apply_local_tiers(suggestions)
-        except (PermissionDenied, PermissionRejected):
-            pass  # user declined — use primary model only, no retry
 
 
 # ---------------------------------------------------------------------------
@@ -778,7 +768,7 @@ def _model_string(agent: "AgentInfo") -> str:
     """Return the litellm model string, e.g. 'anthropic/claude-sonnet-4-5'."""
     if agent.model:
         return f"{agent.model.provider_id}/{agent.model.model_id}"
-    return "azure/gpt-4.1"  # sensible default
+    return "azure/gpt-5.1"  # sensible default
 
 
 def _to_llm_messages(history: list[MessageInfo], agent: "AgentInfo") -> list[Message]:

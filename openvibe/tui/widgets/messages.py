@@ -38,10 +38,10 @@ _STATUS_ICON: dict[str, str] = {
 }
 
 _STATUS_STYLE: dict[str, str] = {
-    "pending": "dim",
-    "running": "yellow",
-    "completed": "green",
-    "error": "red",
+    "pending": "#444444",
+    "running": "#cc9900",
+    "completed": "#3a7a4a",
+    "error": "#cc4444",
 }
 
 
@@ -52,17 +52,17 @@ class ToolWidget(Widget):
     ToolWidget {
         height: auto;
         padding: 0 0 0 2;
-        color: $text-muted;
+        margin: 0;
     }
     ToolWidget .purpose {
         height: auto;
-        padding-left: 4;
-        color: $text-disabled;
+        padding: 0 0 0 5;
+        color: #444444;
     }
     ToolWidget .output {
         height: auto;
-        padding-left: 4;
-        color: $text-muted;
+        padding: 0 2 1 5;
+        color: #555555;
     }
     ToolWidget Static {
         height: auto;
@@ -71,13 +71,14 @@ class ToolWidget(Widget):
 
     def __init__(self, state: dict[str, Any], **kwargs: Any) -> None:
         self._state = state
-        self._expanded = False
+        self._expanded = state.get("status") in ("completed", "error")
         super().__init__(**kwargs)
 
     def compose(self) -> ComposeResult:
         yield Static(self._header_markup(), id="header")
         yield Static(self._purpose_markup(), classes="purpose", id="purpose")
-        yield Static("", classes="output", id="output")
+        initial_output = self._render_output() if self._expanded else ""
+        yield Static(initial_output, classes="output", id="output")
 
     def _header_markup(self) -> str:
         status = self._state.get("status", "pending")
@@ -118,29 +119,30 @@ class ToolWidget(Widget):
         return val
 
     def update_state(self, state: dict[str, Any]) -> None:
+        prev_status = self._state.get("status")
         self._state = state
         self.query_one("#header", Static).update(self._header_markup())
         self.query_one("#purpose", Static).update(self._purpose_markup())
+        new_status = state.get("status")
+        if new_status in ("completed", "error") and prev_status not in ("completed", "error"):
+            self._expanded = True
         if self._expanded:
             self._refresh_output()
 
-    def on_click(self) -> None:
-        if self._state.get("output") or self._state.get("error"):
-            self._expanded = not self._expanded
-            self._refresh_output()
+    def _render_output(self) -> str | _Syntax:
+        content = self._state.get("output") or self._state.get("error") or ""
+        if len(content) > 2000:
+            content = content[:2000] + "\n… (truncated)"
+        if _looks_like_diff(content):
+            return _Syntax(content, "diff", theme="monokai", word_wrap=True)
+        return f"[dim]{_escape(content)}[/dim]"
 
     def _refresh_output(self) -> None:
         out = self.query_one("#output", Static)
         if not self._expanded:
             out.update("")
             return
-        content = self._state.get("output") or self._state.get("error") or ""
-        if len(content) > 2000:
-            content = content[:2000] + "\n… (truncated)"
-        if _looks_like_diff(content):
-            out.update(_Syntax(content, "diff", theme="monokai", word_wrap=True))
-        else:
-            out.update(f"[dim]{_escape(content)}[/dim]")
+        out.update(self._render_output())
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +156,7 @@ class MessageWidget(Widget):
     DEFAULT_CSS = """
     MessageWidget {
         height: auto;
-        padding: 0 2;
+        padding: 1 4;
         margin: 0;
     }
     MessageWidget Static {
@@ -164,21 +166,29 @@ class MessageWidget(Widget):
         display: none;
     }
     MessageWidget Static.code-block {
-        background: #282828;
+        background: #0d1117;
+        padding: 0 2;
+        margin: 0;
     }
     MessageWidget.user {
-        background: #3A3A3A;
-        padding: 0 2;
+        background: #1a1a1a;
+        padding: 1 4;
+        border-left: solid #3a7a4a;
+    }
+    MessageWidget.assistant {
+        padding: 1 4;
     }
     MessageWidget.error {
-        background: $error 8%;
-        padding: 0 2;
-        color: $error;
+        background: #1a0808;
+        padding: 1 4;
+        color: #cc4444;
+        border-left: solid #cc4444;
     }
     MessageWidget.permission {
-        background: $warning 10%;
-        padding: 0 2;
-        color: $warning;
+        background: #1a1500;
+        padding: 1 4;
+        color: #cc8800;
+        border-left: solid #cc8800;
     }
     """
 
@@ -289,7 +299,10 @@ class MessageList(VerticalScroll):
     DEFAULT_CSS = """
     MessageList {
         height: 1fr;
-        padding: 0;
+        padding: 1 0 0 0;
+        background: #111111;
+        scrollbar-color: #2a2a2a #111111;
+        scrollbar-size: 1 1;
     }
     """
 
@@ -297,13 +310,19 @@ class MessageList(VerticalScroll):
         self._messages: dict[str, MessageWidget] = {}
         super().__init__(**kwargs)
 
+    def _at_bottom(self) -> bool:
+        """Return True if the scroll position is at or near the bottom."""
+        return self.scroll_y >= self.max_scroll_y - 3
+
     async def add_message(self, message_id: str, role: str) -> MessageWidget:
         if message_id in self._messages:
             return self._messages[message_id]
         widget = MessageWidget(message_id, role, id=f"msg-{message_id}")
         self._messages[message_id] = widget
+        at_bottom = self._at_bottom()
         await self.mount(widget)
-        self.scroll_end(animate=False)
+        if at_bottom:
+            self.scroll_end(animate=False)
         return widget
 
     def get_message(self, message_id: str) -> MessageWidget | None:
@@ -312,7 +331,8 @@ class MessageList(VerticalScroll):
     def append_text(self, message_id: str, content: str) -> None:
         if widget := self._messages.get(message_id):
             widget.append_text(content)
-            self.scroll_end(animate=False)
+            if self._at_bottom():
+                self.scroll_end(animate=False)
 
     def get_last_assistant_text(self) -> str:
         """Return the raw text of the most recent assistant message, or ''."""

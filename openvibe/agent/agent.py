@@ -119,9 +119,9 @@ TOOL PRIORITY — after pre_flight, always follow this order:
 
 4. mouse tool (LAST RESORT — only for unlabelled canvas areas)
    • Only use when `ui get_tree` shows no accessible elements for the target.
-   • ALWAYS provide image_width and image_height from the screenshot output.
-     This is mandatory — without them, Retina scaling causes wrong coordinates.
-   • Example: mouse click x=450 y=300 image_width=1920 image_height=1200
+   • Use the pixel coordinates directly from the screenshot image — scaling
+     is applied automatically, no need to pass image_width or image_height.
+   • Example: mouse click x=450 y=300
 
 5. keyboard tool — raw keystroke fallback when `ui type` / `ui press_key`
    cannot be used (rare).
@@ -135,6 +135,22 @@ VERIFICATION:
   detected" after an action, the action failed — do NOT repeat it blindly.
   Instead: try ui get_tree to find the element by name, or take a fresh
   screenshot and reassess coordinates.
+
+WHEN AN ELEMENT IS NOT FOUND:
+  If `ui click` fails because no element has that exact title:
+  1. Call `ui get_tree` on the target app to list ALL available elements.
+  2. Find the closest match by appearance or function (not exact label).
+  3. Click that element instead.
+  If `ui get_tree` returns nothing useful, fall back to mouse click using
+  coordinates from a fresh screenshot.
+
+NEVER STOP AND ASK THE USER:
+  - If something fails, adapt and retry using a different approach.
+  - Recorded element labels are hints, not exact requirements — find
+    the element visually or by exploring the accessibility tree.
+  - For text inputs: if the label doesn't match, find any visible text
+    field near the recorded coordinates and type into it.
+  - Keep iterating until the task is complete or all approaches exhausted.
 
 Avoid moving the mouse to extreme screen corners as some systems use corner gestures.
 """
@@ -238,6 +254,7 @@ _BUILTIN_AGENTS: dict[str, AgentInfo] = {
         system_prompt=_COMPUTER_SYSTEM_PROMPT,
         mode=AgentMode.PRIMARY,
         permission_rules=_COMPUTER_RULES,
+        disabled_tools=[],
     ),
 }
 

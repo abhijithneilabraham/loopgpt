@@ -44,6 +44,14 @@ class CommandResult:
     output: str  # Rich markup to display
     quit: bool = False  # signal the app to exit
     clear: bool = False  # signal the screen to clear messages
+    # When set, the TUI sends this text as a new user message to the LLM after
+    # displaying any command output, triggering a full agent turn.
+    forward_to_session: str = ""
+    # When set, use this agent name for the forward_to_session turn.
+    forward_to_agent: str = ""
+    # When > 0, TUI shows a live countdown then calls deferred_action().
+    countdown_seconds: int = 0
+    deferred_action: "Callable[[], None] | None" = None
 
 
 # ---------------------------------------------------------------------------
@@ -582,136 +590,6 @@ def cmd_config(ctx: CommandContext) -> CommandResult:
     return CommandResult(output="\n".join(lines))
 
 
-@command("sim", "Stress-test a process by running openvibe against a real environment")
-def cmd_sim(ctx: CommandContext) -> CommandResult:
-    """Stress-test a process. The harness builds a realistic environment from
-    your description, runs openvibe against it, and evaluates the result.
-
-    /sim run <process description>       — run any process (description is the goal)
-    /sim run --keep <description>        — keep the temp environment for inspection
-    /sim run --hard <description>        — plant adversarial traps in the environment
-    /sim help                            — show difficulty levels and usage tips
-    """
-    args = ctx.args.strip()
-    if not args:
-        return CommandResult(
-            output=(
-                "[bold]Process Stress-Test Harness[/bold]\n\n"
-                "Builds a realistic environment from your description, runs openvibe\n"
-                "against it, then evaluates the result. Nothing is hardcoded.\n\n"
-                "[bold]Usage:[/bold]\n"
-                "  [cyan]/sim run[/cyan] <process description>\n"
-                "  [cyan]/sim run --keep[/cyan] <description>   — preserve env after run\n"
-                "  [cyan]/sim run --hard[/cyan] <description>   — adversarial mode\n"
-                "  [cyan]/sim help[/cyan]                       — difficulty guide\n\n"
-                "[bold]Examples:[/bold]\n"
-                "  /sim run process purchase requisitions through the full P2P workflow\n"
-                "  /sim run --keep investigate the incident logs and write a runbook\n"
-                "  /sim run --hard migrate legacy CRM export to normalised schema\n"
-            )
-        )
-    return CommandResult(output="[dim]Use /sim run or /sim help[/dim]")
-
-
-@subcommand("sim", "help", "Show difficulty levels and usage guide")
-def cmd_sim_help(ctx: CommandContext) -> CommandResult:
-    return CommandResult(
-        output=(
-            "[bold]Process Stress-Test — Difficulty Guide[/bold]\n\n"
-            "[green]foundational[/green]  Linear process, clear inputs/outputs.\n"
-            "               ~5–10 tool calls. Use for basic workflow validation.\n\n"
-            "[yellow]complex[/yellow]       Branching logic, ambiguous edges, judgment required.\n"
-            "               ~10–20 tool calls. Default level for /sim run.\n\n"
-            "[red]adversarial[/red]   Planted traps, conflicting data, wrong assumptions.\n"
-            "               Use --hard flag to enable.\n\n"
-            "[bold]Flags:[/bold]\n"
-            "  --keep   Preserve the generated environment after the run\n"
-            "  --hard   Enable adversarial mode (trap-planting)\n\n"
-            "[bold]The harness:[/bold]\n"
-            "  1. Sends your goal to the LLM → generates setup.sh\n"
-            "  2. Runs setup.sh to build a realistic filesystem environment\n"
-            "  3. Runs openvibe against that environment with your goal\n"
-            "  4. LLM evaluates the result using the process blueprint + filesystem\n\n"
-            "[dim]Nothing is hardcoded. Every environment is generated from your description.[/dim]"
-        )
-    )
-
-
-@subcommand("sim", "run", "Run a process stress-test")
-def cmd_sim_run(ctx: CommandContext) -> CommandResult:
-    import asyncio
-    from openvibe.sim import ProcessHarness, ProcessSpec
-
-    args = ctx.args.strip()
-    keep = False
-    adversarial = False
-    if "--keep" in args:
-        keep = True
-        args = args.replace("--keep", "").strip()
-    if "--hard" in args:
-        adversarial = True
-        args = args.replace("--hard", "").strip()
-
-    if not args:
-        return CommandResult(output="[red]Usage: /sim run <process description>[/red]")
-
-    difficulty = "adversarial" if adversarial else "complex"
-    spec = ProcessSpec(
-        name=args[:40].replace(" ", "_").lower(),
-        goal=args,
-        difficulty=difficulty,
-    )
-
-    progress_lines: list[str] = []
-
-    def on_progress(msg: str) -> None:
-        progress_lines.append(f"[dim]{msg}[/dim]")
-
-    config = _config(ctx)
-    harness = ProcessHarness(
-        config=config,
-        on_progress=on_progress,
-        keep_env=keep,
-    )
-
-    try:
-        run = asyncio.run(harness.run(spec))
-    except Exception as exc:
-        return CommandResult(
-            output=f"[red]Simulation failed:[/red] {exc}\n" + "\n".join(progress_lines)
-        )
-
-    status_color = "green" if run.passed else "red"
-    status = "PASS" if run.passed else "FAIL"
-    lines = [
-        f"[bold]{run.spec_name}[/bold]  [{run.difficulty}]",
-        f"[{status_color}]{status}[/{status_color}]  "
-        f"score: [bold]{run.score:.2f}[/bold]  |  "
-        f"tool calls: {run.tool_calls}  |  "
-        f"branches: {run.dag_branches}  |  "
-        f"{run.elapsed_seconds:.1f}s",
-        "",
-    ]
-    if run.evaluation:
-        lines.append(run.evaluation)
-        lines.append("")
-    if run.strengths:
-        lines.append("[bold dim]What worked:[/bold dim]")
-        for s in run.strengths:
-            lines.append(f"  [green]✓[/green] {s}")
-        lines.append("")
-    if run.gaps:
-        lines.append("[bold dim]Gaps:[/bold dim]")
-        for g in run.gaps:
-            lines.append(f"  [yellow]✗[/yellow] {g}")
-        lines.append("")
-    if run.env_dir:
-        lines.append(f"[dim]Environment preserved at: {run.env_dir}[/dim]")
-    if run.run_error:
-        lines.append(f"[red]Run error:[/red] {run.run_error}")
-
-    return CommandResult(output="\n".join(lines))
-
 
 @command("blueprint", "View or export the process blueprint for this session")
 def cmd_blueprint(ctx: CommandContext) -> CommandResult:
@@ -891,17 +769,20 @@ def cmd_learn_start(ctx: CommandContext) -> CommandResult:
         )
 
     name = name_from_prompt(prompt)
-    try:
-        recorder.start(prompt, name)
-    except Exception as exc:
-        return CommandResult(output=f"[red]Error:[/red] {exc}")
+
+    def _start_recording() -> None:
+        try:
+            recorder.start(prompt, name)
+        except Exception:
+            pass
 
     return CommandResult(
         output=(
-            f"[green]● Recording started[/green]  [bold]{name}[/bold]\n"
-            f"  Task: {prompt}\n\n"
-            "Perform your task now, then run [cyan]/learn stop[/cyan]."
-        )
+            f"[dim]Task:[/dim] {prompt}\n"
+            "[dim]Switch to your app — recording starts in…[/dim]"
+        ),
+        countdown_seconds=3,
+        deferred_action=_start_recording,
     )
 
 
@@ -916,28 +797,28 @@ def cmd_learn_stop(ctx: CommandContext) -> CommandResult:
         )
 
     try:
-        recording = recorder.stop()
+        task_graph = recorder.stop()
     except Exception as exc:
         return CommandResult(output=f"[red]Error stopping:[/red] {exc}")
 
-    path = recording.save()
+    path = task_graph.save()
     return CommandResult(
         output=(
-            f"[green]Saved:[/green] [bold]{recording.name}[/bold]\n"
-            f"  Events:   {len(recording.events)}\n"
-            f"  Duration: {recording.duration:.1f}s\n"
+            f"[green]Saved:[/green] [bold]{task_graph.name}[/bold]\n"
+            f"  Steps:    {len(task_graph.steps)}\n"
+            f"  Duration: {task_graph.duration:.1f}s\n"
             f"  File:     {path}\n\n"
-            f"Replay: [cyan]/learn replay[/cyan] [italic]{recording.name}[/italic]"
+            f"Replay: [cyan]/learn replay[/cyan] [italic]{task_graph.name}[/italic]"
         )
     )
 
 
 @subcommand("learn", "list", "List saved recordings")
 def cmd_learn_list(ctx: CommandContext) -> CommandResult:
-    from openvibe.computer.recorder import Recording, recordings_dir
+    from openvibe.computer.recorder import TaskGraph, recordings_dir
 
-    recs = Recording.list_all()
-    if not recs:
+    graphs = TaskGraph.list_all()
+    if not graphs:
         return CommandResult(
             output=(
                 "[dim]No recordings yet.[/dim]\n"
@@ -946,19 +827,19 @@ def cmd_learn_list(ctx: CommandContext) -> CommandResult:
             )
         )
 
-    lines = [f"[bold]Recordings[/bold] ({len(recs)})  [dim]{recordings_dir()}[/dim]\n"]
-    for r in recs:
-        lines.append(f"  [bold cyan]{r.name}[/bold cyan]")
-        lines.append(f"    [italic]{r.prompt}[/italic]")
-        lines.append(f"    [dim]{r.recorded_at[:19]}  {r.duration:.1f}s[/dim]")
+    lines = [f"[bold]Recordings[/bold] ({len(graphs)})  [dim]{recordings_dir()}[/dim]\n"]
+    for g in graphs:
+        lines.append(f"  [bold cyan]{g.name}[/bold cyan]")
+        lines.append(f"    [italic]{g.prompt}[/italic]")
+        lines.append(f"    [dim]{g.recorded_at[:19]}  {g.duration:.1f}s  {len(g.steps)} steps[/dim]")
         lines.append("")
     lines.append("[dim]Replay: /learn replay <name>[/dim]")
     return CommandResult(output="\n".join(lines))
 
 
-@subcommand("learn", "replay", "Replay a saved recording")
+@subcommand("learn", "replay", "Replay a saved recording via computer use")
 def cmd_learn_replay(ctx: CommandContext) -> CommandResult:
-    from openvibe.computer.recorder import Recording
+    from openvibe.computer.recorder import TaskGraph
 
     query = ctx.args.strip().strip('"').strip("'")
     if not query:
@@ -966,33 +847,19 @@ def cmd_learn_replay(ctx: CommandContext) -> CommandResult:
             output="[red]Usage:[/red] /learn replay [italic]<name>[/italic]"
         )
 
-    recording = Recording.load(query)
-    if recording is None:
+    task_graph = TaskGraph.load(query)
+    if task_graph is None:
         return CommandResult(
             output=f"[red]Not found:[/red] {query!r}\n"
                    "Run [cyan]/learn list[/cyan] to see saved recordings."
         )
-    if not recording.events:
+    if not task_graph.steps:
         return CommandResult(
-            output="[yellow]Recording has no events.[/yellow] Re-record with [cyan]/learn start[/cyan]."
+            output="[yellow]Recording has no steps.[/yellow] Re-record with [cyan]/learn start[/cyan]."
         )
 
-    try:
-        outcome = recording.replay_with_vision()
-    except Exception as exc:
-        return CommandResult(output=f"[red]Replay error:[/red] {exc}")
-
-    clicks = sum(1 for e in recording.events if e.type == "click" and e.data.get("pressed"))
-    color = "green" if outcome == "done" else "yellow"
-    note = "" if outcome == "done" else "  [dim](stopped — human input detected)[/dim]"
-    return CommandResult(
-        output=(
-            f"[{color}]{outcome.capitalize()}.[/{color}] "
-            f"[bold]{recording.name}[/bold]  "
-            f"[dim]({len(recording.events)} events, {clicks} clicks, {recording.duration:.1f}s)[/dim]"
-            f"{note}"
-        )
-    )
+    prompt = task_graph.build_replay_prompt()
+    return CommandResult(output="", forward_to_session=prompt, forward_to_agent="computer")
 
 
 @subcommand("learn", "delete", "Delete a saved recording")

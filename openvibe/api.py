@@ -161,6 +161,7 @@ class Session:
         processor: Any = None,  # openvibe.session.processor.SessionProcessor (async path)
         bus: Any = None,  # openvibe.bus.EventBus (async path)
         permissions: Any = None,  # openvibe.permission.permission.PermissionService (async path)
+        auto_accept: bool = False,  # auto-approve all permission prompts
     ) -> None:
         self._info = session_info
         self._db = db
@@ -172,6 +173,7 @@ class Session:
         self._processor = processor
         self._bus = bus
         self._permissions = permissions
+        self._auto_accept = auto_accept
         self._state = SessionState.IDLE
         self._lock = threading.Lock()
 
@@ -202,6 +204,10 @@ class Session:
     @property
     def info(self) -> Any:  # SessionInfo
         return self._info
+
+    @property
+    def auto_accept(self) -> bool:
+        return self._auto_accept
 
     def messages(self) -> list[Any]:  # list[MessageInfo]
         from openvibe.session import session as _store
@@ -361,6 +367,7 @@ class Session:
         on_token: Callable[[str], None] | None = None,
         on_message: Callable[[str, str], None] | None = None,
         on_tool: Callable[[str, int, Any], None] | None = None,
+        clean_context: bool = False,
     ) -> Response:
         """Send *text* to the agent and block until a result is ready.
 
@@ -401,7 +408,7 @@ class Session:
 
         self._on_message = on_message
         self._on_tool = on_tool
-        self._launch_worker(text, on_token, callback=None)
+        self._launch_worker(text, on_token, callback=None, clean_context=clean_context)
         return self._collect()
 
     def reply(
@@ -581,10 +588,21 @@ class Session:
         text: str,
         on_token: Callable[[str], None] | None,
         callback: Callable[[Response], None] | None,
+        clean_context: bool = False,
     ) -> None:
+        import dataclasses
         from openvibe.agent.agent import resolve as _resolve
 
         agent = _resolve(self._config, self._agent_name)
+
+        if self._auto_accept:
+            from openvibe.permission.permission import Rule
+            from openvibe.config import PermissionAction
+            allow_all = Rule(tool="*", action=PermissionAction.ALLOW)
+            agent = dataclasses.replace(
+                agent,
+                permission_rules=[allow_all] + list(agent.permission_rules),
+            )
 
         if self._processor is not None:
             # Async processor path — full-featured (bus events, real-time tools, etc.)
@@ -605,6 +623,7 @@ class Session:
                     self._result_q,
                     self._resume_q,
                     self._abort_ev,
+                    clean_context,
                 ),
                 daemon=True,
                 name=f"openvibe-worker-{self._info.id[:8]}",
@@ -780,7 +799,7 @@ class OpenVibe:
 
         self._processor = SessionProcessor(
             self._db, llm, self._bus, self._registry, self._permissions,
-            router=router,
+            router=router, config=self._config,
         )
         self._llm = llm
         return self
@@ -832,6 +851,7 @@ class OpenVibe:
         self,
         agent: str = "build",
         title: str | None = None,
+        auto_accept: bool = False,
     ) -> Session:
         self._require_started()
         from openvibe.session import session as _store
@@ -852,6 +872,7 @@ class OpenVibe:
             processor=self._processor,
             bus=self._bus,
             permissions=self._permissions,
+            auto_accept=auto_accept,
         )
 
     def get_session(self, session_id: str, agent: str = "build") -> Session:
@@ -962,6 +983,7 @@ def _run_turn_async_threaded(
     result_q: "queue.Queue[Response]",
     resume_q: "queue.Queue[tuple[str, str]]",
     abort_ev: threading.Event,
+    clean_context: bool = False,
 ) -> None:
     """Spawn a fresh event loop in this thread and run the async processor."""
     import asyncio
@@ -985,6 +1007,7 @@ def _run_turn_async_threaded(
                 result_q,
                 resume_q,
                 abort_ev,
+                clean_context,
             )
         )
     finally:
@@ -1007,6 +1030,7 @@ async def _run_turn_async(
     result_q: "queue.Queue[Response]",
     resume_q: "queue.Queue[tuple[str, str]]",
     abort_ev: threading.Event,
+    clean_context: bool = False,
 ) -> None:
     """Run one turn via the full async processor, translating bus events to callbacks.
 
@@ -1052,7 +1076,8 @@ async def _run_turn_async(
             try:
                 await subscribed.wait()
                 await processor.run(
-                    session_info, agent, text, abort_async, user_message=user_msg
+                    session_info, agent, text, abort_async,
+                    user_message=user_msg, clean_context=clean_context,
                 )
                 success = True
             except Exception as exc:  # noqa: BLE001

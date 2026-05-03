@@ -1,14 +1,4 @@
-"""Screen-capture helpers using *mss* and *Pillow*.
-
-All functions are synchronous; run them in a thread pool when called from
-async code (see :mod:`openvibe.tool.computer_screenshot`).
-
-Example::
-
-    png_bytes, w, h = capture_screen()
-    png_bytes, w, h = capture_screen(region=(100, 100, 800, 600))
-    png_bytes, w, h = capture_screen(monitor=2)   # second monitor
-"""
+"""Screen-capture helpers using mss and Pillow. All functions are synchronous."""
 
 from __future__ import annotations
 
@@ -16,25 +6,23 @@ import base64
 import io
 
 
-# Maximum width before the image is downscaled.
-# 4K / Retina screens produce enormous PNGs that push against API size limits.
-_MAX_WIDTH = 1920
+# Maximum dimensions before the image is downscaled.
+# Anthropic's computer-use model is calibrated for ≤1024×768. Sending larger
+# images causes coordinate mismatches because the model returns positions in
+# the ~1024-wide space while callers assume the full-size image coordinate space.
+_MAX_WIDTH = 1024
+_MAX_HEIGHT = 768
 
 
 def list_monitors() -> list[dict[str, int]]:
-    """Return info for all monitors as a list of dicts with keys left/top/width/height.
-
-    The first entry (index 0) is the primary monitor; additional entries are
-    secondary monitors in the order reported by the OS.
-    """
+    """Return info dicts (left/top/width/height) for each monitor."""
     try:
         import mss
     except ImportError as exc:
         raise ImportError("mss is required: pip install mss pillow") from exc
 
     with mss.mss() as sct:
-        # monitors[0] = virtual bounding box of all screens
-        # monitors[1..n] = individual screens
+        # monitors[0] = virtual bounding box, [1..n] = individual screens
         return [
             {"left": m["left"], "top": m["top"], "width": m["width"], "height": m["height"]}
             for m in sct.monitors[1:]
@@ -45,26 +33,12 @@ def capture_screen(
     region: tuple[int, int, int, int] | None = None,
     monitor: int = 1,
 ) -> tuple[bytes, int, int]:
-    """Capture a screenshot and return ``(png_bytes, width, height)``.
+    """Capture a screenshot and return (png_bytes, width, height).
 
-    Parameters
-    ----------
-    region:
-        Optional ``(x, y, width, height)`` in *logical* screen coordinates.
-        ``None`` captures the entire *monitor*.
-    monitor:
-        1-indexed monitor number (1 = primary, 2 = second monitor, …).
-        Ignored when *region* is provided.
-
-    Raises
-    ------
-    ImportError
-        When ``mss`` or ``Pillow`` are not installed.
-    RuntimeError
-        When the captured data length doesn't match expectations — this
-        most commonly means screen recording permission has not been
-        granted (macOS: System Settings → Privacy & Security → Screen
-        Recording).
+    region: (x, y, w, h) in logical pixels; None = full monitor.
+    monitor: 1-indexed (1 = primary). Ignored when region is set.
+    Raises ImportError if mss/Pillow missing, RuntimeError on data mismatch
+    (macOS: grant Screen Recording permission).
     """
     try:
         import mss  # type: ignore[import-not-found]
@@ -91,19 +65,8 @@ def capture_screen(
 
         sct_img = sct.grab(mon_dict)
 
-        # ── Critical fix ────────────────────────────────────────────────────
-        # sct_img.bgra is a memoryview (or custom buffer object) returned by
-        # mss.  PIL's raw decoder requires a plain bytes object; passing a
-        # memoryview directly causes PIL to silently read the wrong memory
-        # region, producing a corrupt image.
-        #
-        # bytes() materialises the buffer into an actual bytes object before
-        # handing it to PIL.
-        #
-        # The "BGRX" raw decoder reads 4 bytes per pixel (B, G, R, ignored)
-        # and writes them into an RGB image as (R, G, B) — the correct channel
-        # reordering for BGRA→RGB conversion.
-        # ─────────────────────────────────────────────────────────────────────
+        # bytes() materialises mss's memoryview; PIL requires plain bytes.
+        # BGRX decoder reorders channels BGRA→RGB correctly.
         raw_bgra = bytes(sct_img.bgra)
 
         expected = sct_img.width * sct_img.height * 4
@@ -124,11 +87,12 @@ def capture_screen(
             "BGRX",   # read B-G-R-X, produce R-G-B
         )
 
-    # Downscale very large screens to stay under API image-size limits.
-    if img.width > _MAX_WIDTH:
-        scale = _MAX_WIDTH / img.width
+    # Downscale to fit within _MAX_WIDTH × _MAX_HEIGHT (maintain aspect ratio).
+    if img.width > _MAX_WIDTH or img.height > _MAX_HEIGHT:
+        scale = min(_MAX_WIDTH / img.width, _MAX_HEIGHT / img.height)
+        new_w = max(1, int(img.width * scale))
         new_h = max(1, int(img.height * scale))
-        img = img.resize((_MAX_WIDTH, new_h), Image.LANCZOS)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
