@@ -48,11 +48,12 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import inspect
 import json
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable, get_type_hints
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, create_model
 
 if TYPE_CHECKING:
     from openvibe.llm import Message
@@ -203,6 +204,105 @@ class ToolRegistry:
         return name in self._tools
 
 
+# ---------------------------------------------------------------------------
+# @tool decorator
+# ---------------------------------------------------------------------------
+
+_user_registry: ToolRegistry | None = None
+
+
+def _get_user_registry() -> ToolRegistry:
+    """Return the module-level registry that collects @tool-decorated functions."""
+    global _user_registry
+    if _user_registry is None:
+        _user_registry = ToolRegistry()
+    return _user_registry
+
+
+def tool(fn: Callable) -> "Tool":
+    """Decorator that turns a plain Python function into an openvibe Tool.
+
+    Type hints become the parameter JSON schema sent to the LLM.
+    The docstring becomes the tool description.
+    A ``str`` return value is wrapped in a ``ToolResult`` automatically.
+    Return a ``ToolResult`` directly for full control over title/metadata.
+
+    The resulting tool is immediately registered in the global user-tool
+    registry and available to any ``OpenVibe`` session — no manual
+    registration required.
+
+    If the function declares a ``ctx: ToolContext`` parameter, the runtime
+    context is injected automatically. Both sync and async functions are
+    supported.
+
+    Example::
+
+        from openvibe import tool
+
+        @tool
+        def search_jira(query: str, project: str = "ENG") -> str:
+            \"\"\"Search Jira tickets matching a query.\"\"\"
+            tickets = jira.search(f"project={project} AND text~'{query}'")
+            return "\\n".join(f"[{t.key}] {t.summary}" for t in tickets)
+    """
+    sig = inspect.signature(fn)
+
+    # Resolve type hints; fall back gracefully if resolution fails (e.g. in REPLs)
+    try:
+        hints = get_type_hints(fn)
+    except Exception:
+        hints = {
+            k: v.annotation
+            for k, v in sig.parameters.items()
+            if v.annotation is not inspect.Parameter.empty
+        }
+
+    # Does the function want the ToolContext injected?
+    _wants_ctx = "ctx" in sig.parameters
+
+    # Build pydantic field definitions (skip 'ctx', 'return')
+    fields: dict[str, Any] = {}
+    for param_name, param in sig.parameters.items():
+        if param_name == "ctx":
+            continue
+        annotation = hints.get(param_name, Any)
+        if param.default is inspect.Parameter.empty:
+            fields[param_name] = (annotation, ...)
+        else:
+            fields[param_name] = (annotation, param.default)
+
+    _ParamsModel = create_model(
+        "Params",
+        __config__=ConfigDict(extra="forbid"),
+        **fields,
+    )
+
+    _tool_name = fn.__name__
+    _tool_description = inspect.getdoc(fn) or _tool_name
+    _fn = fn
+
+    class FunctionTool(Tool):
+        name = _tool_name
+        description = _tool_description
+        Params = _ParamsModel
+
+        async def execute(self, ctx: ToolContext, params: _ParamsModel) -> ToolResult:  # type: ignore[override]
+            kwargs = params.model_dump()
+            if _wants_ctx:
+                kwargs["ctx"] = ctx
+            if asyncio.iscoroutinefunction(_fn):
+                result = await _fn(**kwargs)
+            else:
+                result = _fn(**kwargs)
+            if isinstance(result, ToolResult):
+                return result
+            return ToolResult(title=_tool_name, output=str(result))
+
+    instance = FunctionTool()
+    _get_user_registry().register(instance)
+    return instance  # type: ignore[return-value]
+
+
 def create_default_registry() -> ToolRegistry:
     """Create a registry pre-loaded with all built-in tools."""
     from openvibe.tool.bash import BashTool
@@ -215,7 +315,7 @@ def create_default_registry() -> ToolRegistry:
     from openvibe.tool.write import WriteTool
 
     registry = ToolRegistry()
-    for tool in [
+    for t in [
         BashTool(),
         ReadTool(),
         WriteTool(),
@@ -226,5 +326,10 @@ def create_default_registry() -> ToolRegistry:
         TodoWriteTool(),
         TodoReadTool(),
     ]:
-        registry.register(tool)
+        registry.register(t)
+
+    # Include any user-defined @tool-decorated functions
+    for user_tool in _get_user_registry().all():
+        registry.register(user_tool)
+
     return registry
